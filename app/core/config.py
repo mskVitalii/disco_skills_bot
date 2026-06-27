@@ -37,7 +37,10 @@ class Settings(BaseSettings):
     # Database
     DATABASE_URL: str = "postgres://disco_user:disco_pass@localhost:5432/disco_db"
 
-    # Redis
+    # Redis — individual vars from Railway Redis plugin take priority over REDIS_URL
+    REDISHOST: Optional[str] = None
+    REDISPORT: int = 6379
+    REDISPASSWORD: Optional[str] = None
     REDIS_URL: str = "redis://localhost:6379"
 
     # OpenAI
@@ -63,6 +66,14 @@ class Settings(BaseSettings):
         if not v:
             return []
         return [int(x.strip()) for x in str(v).split(",") if x.strip()]
+
+    def get_redis_url(self) -> str:
+        """Build Redis URL from individual Railway plugin vars if available."""
+        if self.REDISHOST:
+            if self.REDISPASSWORD:
+                return f"redis://:{self.REDISPASSWORD}@{self.REDISHOST}:{self.REDISPORT}"
+            return f"redis://{self.REDISHOST}:{self.REDISPORT}"
+        return self.REDIS_URL
 
     @classmethod
     def settings_customise_sources(

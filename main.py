@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.storage.redis import RedisStorage
 from aiogram.types import Update
 from fastapi import FastAPI, Request
@@ -28,7 +29,24 @@ bot = Bot(
     token=settings.BOT_TOKEN,
     default=DefaultBotProperties(parse_mode=ParseMode.HTML),
 )
-storage = RedisStorage.from_url(settings.REDIS_URL)
+
+_redis_url = settings.get_redis_url()
+_redis_url_safe = _redis_url.split("@")[-1] if "@" in _redis_url else _redis_url
+logger.info(
+    "Redis URL source: %s → %s",
+    "REDISHOST" if settings.REDISHOST else "REDIS_URL",
+    _redis_url_safe,
+)
+try:
+    storage = RedisStorage.from_url(_redis_url)
+    logger.info("RedisStorage initialized")
+except Exception as _redis_exc:
+    logger.error(
+        "RedisStorage failed (url=%r): %s — falling back to MemoryStorage",
+        _redis_url_safe, _redis_exc,
+    )
+    storage = MemoryStorage()
+
 dp = Dispatcher(storage=storage)
 dp.include_router(main_router)
 
@@ -67,7 +85,8 @@ async def _background_init() -> None:
                 return
 
     # ── Redis ──────────────────────────────────────────────────────────────────
-    redis_url_safe = settings.REDIS_URL.split("@")[-1] if "@" in settings.REDIS_URL else settings.REDIS_URL
+    redis_url = settings.get_redis_url()
+    redis_url_safe = redis_url.split("@")[-1] if "@" in redis_url else redis_url
     logger.info("[2/4] Checking Redis (%s)...", redis_url_safe)
     try:
         from app.core.database import get_redis
