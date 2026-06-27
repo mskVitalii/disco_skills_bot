@@ -271,6 +271,19 @@ async def handle_go_back(user: User) -> dict | None:
     return await _load_node_cache(redis, prev_node_id)
 
 
+async def get_current_context_message(user: User) -> str:
+    """Return the last user message from current dialog node, or empty string."""
+    redis = get_redis()
+    state = await _load_state(redis, user.telegram_id)
+    if not state:
+        return ""
+    node_id = state.get("current_node_id")
+    if not node_id:
+        return ""
+    cache = await _load_node_cache(redis, node_id)
+    return (cache or {}).get("user_message", "")
+
+
 async def reset_dialog(user: User) -> None:
     redis = get_redis()
     state = await _load_state(redis, user.telegram_id)

@@ -11,8 +11,11 @@ from app.data.skills import ALL_SKILLS, CATEGORIES
 from app.models.user import User, UserSkillLevel
 from app.services.dialog_service import (
     get_or_create_user,
+    get_current_context_message,
     handle_scene_command,
+    handle_user_message,
     reset_dialog,
+    update_node_message_id,
 )
 from app.bot.keyboards.inline import dialog_keyboard
 
@@ -30,6 +33,7 @@ def _is_allowed(telegram_id: int) -> bool:
 async def cmd_start(message: Message, state: FSMContext) -> None:
     if not _is_allowed(message.from_user.id):
         return
+    logger.info("/start user_id=%s username=%s", message.from_user.id, message.from_user.username)
 
     user = await get_or_create_user(
         telegram_id=message.from_user.id,
@@ -45,6 +49,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         f"Добро пожаловать, {name}.\n\n"
         "Я — голоса внутри. Напиши что-нибудь — и мы прокомментируем.\n\n"
         "<b>Команды:</b>\n"
+        "/disco — позвать голоса прямо сейчас\n"
         "/scene <i>описание</i> — создать сцену для игры\n"
         "/skills — текущие уровни характеристик\n"
         "/new — сбросить текущий диалог",
@@ -56,6 +61,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
 async def cmd_new(message: Message, state: FSMContext) -> None:
     if not _is_allowed(message.from_user.id):
         return
+    logger.info("/new user_id=%s", message.from_user.id)
 
     user = await User.get_or_none(telegram_id=message.from_user.id)
     if user:
@@ -69,6 +75,7 @@ async def cmd_new(message: Message, state: FSMContext) -> None:
 async def cmd_scene(message: Message, state: FSMContext) -> None:
     if not _is_allowed(message.from_user.id):
         return
+    logger.info("/scene user_id=%s text=%r", message.from_user.id, message.text)
 
     # Extract description after /scene
     text = message.text or ""
@@ -123,15 +130,48 @@ async def _process_scene(message: Message, state: FSMContext, description: str) 
     await state.set_state(DialogState.active)
 
 
+@router.message(Command("disco"))
+async def cmd_disco(message: Message, state: FSMContext) -> None:
+    if not _is_allowed(message.from_user.id):
+        return
+    logger.info("/disco user_id=%s", message.from_user.id)
+
+    user = await get_or_create_user(
+        telegram_id=message.from_user.id,
+        chat_id=message.chat.id,
+        username=message.from_user.username,
+        first_name=message.from_user.first_name or "",
+    )
+
+    last_message = await get_current_context_message(user)
+    if last_message:
+        prompt = f"Голоса пробуждаются снова. Мысли возвращаются к: «{last_message[:120]}»"
+    else:
+        prompt = "Детектив молчит. Тишина. Голоса внутри начинают говорить сами по себе."
+
+    thinking = await message.answer("🎭 Голоса пробуждаются...")
+
+    text, ai_result, node_id = await handle_user_message(user=user, user_message=prompt)
+
+    kb = dialog_keyboard(ai_result, node_id, show_back=bool(last_message))
+    await thinking.delete()
+    sent = await message.answer(text, parse_mode="HTML", reply_markup=kb)
+    await update_node_message_id(node_id, sent.message_id)
+    await state.set_state(DialogState.active)
+
+
 @router.message(Command("skills"))
 async def cmd_skills(message: Message) -> None:
     if not _is_allowed(message.from_user.id):
         return
+    logger.info("/skills user_id=%s", message.from_user.id)
 
-    user = await User.get_or_none(telegram_id=message.from_user.id)
-    if not user:
-        await message.answer("Сначала отправь /start")
-        return
+    user = await get_or_create_user(
+        telegram_id=message.from_user.id,
+        chat_id=message.chat.id,
+        username=message.from_user.username,
+        first_name=message.from_user.first_name or "",
+    )
 
     levels = await UserSkillLevel.filter(user=user).all()
     level_map = {l.skill_name: l.level for l in levels}

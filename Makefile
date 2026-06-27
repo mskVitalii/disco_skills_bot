@@ -51,7 +51,7 @@ db-reset:
 	uv run aerich upgrade
 
 dev: up
-	uv run python main.py
+	uv run uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
 lint:
 	uv run ruff check . --fix
