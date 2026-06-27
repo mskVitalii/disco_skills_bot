@@ -34,22 +34,31 @@ async def _get_or_init_user(message: Message):
 
 
 async def _process_text(message: Message, text: str, state: FSMContext) -> None:
-    user = await _get_or_init_user(message)
+    thinking = None
+    try:
+        user = await _get_or_init_user(message)
+        thinking = await message.answer("⏳")
 
-    thinking = await message.answer("⏳")
+        text_response, ai_result, node_id = await handle_user_message(
+            user=user,
+            user_message=text,
+        )
 
-    text_response, ai_result, node_id = await handle_user_message(
-        user=user,
-        user_message=text,
-    )
+        kb = dialog_keyboard(ai_result, node_id, show_back=True)
 
-    kb = dialog_keyboard(ai_result, node_id, show_back=True)
-
-    await thinking.delete()
-    sent = await message.answer(text_response, parse_mode="HTML", reply_markup=kb)
-    await update_node_message_id(node_id, sent.message_id)
-
-    await state.set_state(DialogState.active)
+        await thinking.delete()
+        thinking = None
+        sent = await message.answer(text_response, parse_mode="HTML", reply_markup=kb)
+        await update_node_message_id(node_id, sent.message_id)
+        await state.set_state(DialogState.active)
+    except Exception:
+        logger.exception("Error processing message user_id=%s text=%r", message.from_user.id, text[:80])
+        if thinking:
+            try:
+                await thinking.delete()
+            except Exception:
+                pass
+        await message.answer("Голоса замолчали. Попробуй снова — или /new чтобы начать заново.")
 
 
 # ─── Text message ─────────────────────────────────────────────────────────────
