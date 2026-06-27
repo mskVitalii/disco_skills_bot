@@ -61,6 +61,7 @@ async def handle_text_active(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
     if not text or text.startswith("/"):
         return
+    logger.info("text user_id=%s len=%d", message.from_user.id, len(text))
     await _process_text(message, text, state)
 
 
@@ -77,6 +78,7 @@ async def handle_text_any(message: Message, state: FSMContext) -> None:
     if current == DialogState.waiting_scene:
         return  # handled by command handler
 
+    logger.info("text(any) user_id=%s len=%d", message.from_user.id, len(text))
     await _process_text(message, text, state)
 
 
@@ -91,6 +93,7 @@ async def handle_voice(message: Message, state: FSMContext) -> None:
     if not voice:
         return
 
+    logger.info("voice user_id=%s duration=%ds", message.from_user.id, voice.duration)
     thinking = await message.answer("🎙️ Транскрибирую голосовое...")
 
     bot = message.bot
@@ -120,6 +123,7 @@ async def handle_video_note(message: Message, state: FSMContext) -> None:
     if not video_note:
         return
 
+    logger.info("video_note user_id=%s duration=%ds", message.from_user.id, video_note.duration)
     thinking = await message.answer("🎙️ Транскрибирую кружочек...")
 
     bot = message.bot

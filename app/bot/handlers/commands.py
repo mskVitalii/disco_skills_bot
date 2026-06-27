@@ -33,6 +33,7 @@ def _is_allowed(telegram_id: int) -> bool:
 async def cmd_start(message: Message, state: FSMContext) -> None:
     if not _is_allowed(message.from_user.id):
         return
+    logger.info("/start user_id=%s username=%s", message.from_user.id, message.from_user.username)
 
     user = await get_or_create_user(
         telegram_id=message.from_user.id,
@@ -60,6 +61,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
 async def cmd_new(message: Message, state: FSMContext) -> None:
     if not _is_allowed(message.from_user.id):
         return
+    logger.info("/new user_id=%s", message.from_user.id)
 
     user = await User.get_or_none(telegram_id=message.from_user.id)
     if user:
@@ -73,6 +75,7 @@ async def cmd_new(message: Message, state: FSMContext) -> None:
 async def cmd_scene(message: Message, state: FSMContext) -> None:
     if not _is_allowed(message.from_user.id):
         return
+    logger.info("/scene user_id=%s text=%r", message.from_user.id, message.text)
 
     # Extract description after /scene
     text = message.text or ""
@@ -131,6 +134,7 @@ async def _process_scene(message: Message, state: FSMContext, description: str) 
 async def cmd_disco(message: Message, state: FSMContext) -> None:
     if not _is_allowed(message.from_user.id):
         return
+    logger.info("/disco user_id=%s", message.from_user.id)
 
     user = await get_or_create_user(
         telegram_id=message.from_user.id,
@@ -160,6 +164,7 @@ async def cmd_disco(message: Message, state: FSMContext) -> None:
 async def cmd_skills(message: Message) -> None:
     if not _is_allowed(message.from_user.id):
         return
+    logger.info("/skills user_id=%s", message.from_user.id)
 
     user = await get_or_create_user(
         telegram_id=message.from_user.id,
