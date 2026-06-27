@@ -123,7 +123,11 @@ async def _background_init() -> None:
         logger.info("[4/4] Setting webhook: %s", webhook_url)
         try:
             await bot.set_webhook(webhook_url, drop_pending_updates=True)
-            logger.info("[4/4] Webhook set")
+            info = await bot.get_webhook_info()
+            logger.info(
+                "[4/4] Webhook set. Telegram confirms: url=%s pending=%d last_error=%s",
+                info.url, info.pending_update_count, info.last_error_message or "none",
+            )
         except Exception as exc:
             logger.error(
                 "[4/4] FAILED: set_webhook failed: %s. "
@@ -200,6 +204,8 @@ async def log_requests(request: Request, call_next):
 @app.post("/webhook")
 async def webhook(request: Request) -> dict:
     data = await request.json()
+    update_type = next((k for k in data if k != "update_id"), "unknown")
+    logger.info("Webhook received: update_id=%s type=%s", data.get("update_id"), update_type)
     update = Update.model_validate(data)
     await dp.feed_update(bot=bot, update=update)
     return {"ok": True}
