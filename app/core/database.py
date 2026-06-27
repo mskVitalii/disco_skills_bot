@@ -1,0 +1,45 @@
+import redis.asyncio as aioredis
+from tortoise import Tortoise
+
+from app.core.config import settings
+
+TORTOISE_ORM = {
+    "connections": {
+        "default": settings.DATABASE_URL,
+    },
+    "apps": {
+        "models": {
+            "models": [
+                "app.models.user",
+                "app.models.dialog",
+                "aerich.models",
+            ],
+            "default_connection": "default",
+        },
+    },
+}
+
+_redis: aioredis.Redis | None = None
+
+
+async def init_db() -> None:
+    await Tortoise.init(config=TORTOISE_ORM)
+    await Tortoise.generate_schemas(safe=True)
+
+
+async def close_db() -> None:
+    await Tortoise.close_connections()
+
+
+def get_redis() -> aioredis.Redis:
+    global _redis
+    if _redis is None:
+        _redis = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+    return _redis
+
+
+async def close_redis() -> None:
+    global _redis
+    if _redis is not None:
+        await _redis.aclose()
+        _redis = None

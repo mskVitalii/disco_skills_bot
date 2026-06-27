@@ -1,0 +1,27 @@
+[project]
+name = "disco-skills-bot"
+version = "0.1.0"
+description = "Disco Elysium inspired Telegram bot with characteristic skill responses"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "aiogram>=3.13.0",
+    "tortoise-orm>=0.21.0",
+    "aerich>=0.7.2",
+    "asyncpg>=0.30.0",
+    "redis>=5.2.0",
+    "openai>=1.54.0",
+    "pydantic-settings>=2.6.0",
+    "python-dotenv>=1.0.0",
+    "aiofiles>=24.1.0",
+]
+
+[tool.aerich]
+tortoise_orm = "app.core.database.TORTOISE_ORM"
+location = "./migrations"
+src_folder = "./."
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
