@@ -39,7 +39,7 @@ async def close_db() -> None:
 def get_redis() -> aioredis.Redis:
     global _redis
     if _redis is None:
-        _redis = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+        _redis = aioredis.from_url(settings.get_redis_url(), decode_responses=True)
     return _redis
 
 

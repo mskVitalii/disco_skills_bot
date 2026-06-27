@@ -28,7 +28,7 @@ bot = Bot(
     token=settings.BOT_TOKEN,
     default=DefaultBotProperties(parse_mode=ParseMode.HTML),
 )
-storage = RedisStorage.from_url(settings.REDIS_URL)
+storage = RedisStorage.from_url(settings.get_redis_url())
 dp = Dispatcher(storage=storage)
 dp.include_router(main_router)
 
@@ -67,7 +67,8 @@ async def _background_init() -> None:
                 return
 
     # ── Redis ──────────────────────────────────────────────────────────────────
-    redis_url_safe = settings.REDIS_URL.split("@")[-1] if "@" in settings.REDIS_URL else settings.REDIS_URL
+    redis_url = settings.get_redis_url()
+    redis_url_safe = redis_url.split("@")[-1] if "@" in redis_url else redis_url
     logger.info("[2/4] Checking Redis (%s)...", redis_url_safe)
     try:
         from app.core.database import get_redis
