@@ -10,7 +10,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.storage.redis import RedisStorage
-from aiogram.types import Update
+from aiogram.types import ErrorEvent, Update
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
@@ -51,6 +51,16 @@ except Exception as _redis_exc:
 
 dp = Dispatcher(storage=storage)
 dp.include_router(main_router)
+
+
+@dp.error()
+async def global_error_handler(event: ErrorEvent) -> None:
+    logger.exception(
+        "Unhandled aiogram error in %s: %s",
+        event.update,
+        event.exception,
+        exc_info=event.exception,
+    )
 
 _polling_task: asyncio.Task | None = None
 _init_task: asyncio.Task | None = None
@@ -199,9 +209,12 @@ async def log_requests(request: Request, call_next):
 
 @app.post("/webhook")
 async def webhook(request: Request) -> dict:
-    data = await request.json()
-    update = Update.model_validate(data)
-    await dp.feed_update(bot=bot, update=update)
+    try:
+        data = await request.json()
+        update = Update.model_validate(data)
+        await dp.feed_update(bot=bot, update=update)
+    except Exception:
+        logger.exception("Unhandled exception in webhook feed_update")
     return {"ok": True}
 
 
