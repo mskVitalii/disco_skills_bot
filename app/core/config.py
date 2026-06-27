@@ -43,6 +43,12 @@ class Settings(BaseSettings):
     DEBUG: bool = False
     MAX_SKILL_RESPONSES: int = 4
 
+    @field_validator("DATABASE_URL", mode="before")
+    @classmethod
+    def normalize_db_scheme(cls, v: str) -> str:
+        # Tortoise ORM requires "postgres://" — Railway and some providers use "postgresql://"
+        return v.replace("postgresql://", "postgres://", 1) if isinstance(v, str) else v
+
     @field_validator("ALLOWED_USER_IDS", mode="before")
     @classmethod
     def parse_user_ids(cls, v: str | list) -> list[int]:
