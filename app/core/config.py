@@ -1,6 +1,16 @@
-from typing import Optional
+from typing import Any, Optional, Tuple, Type
 from pydantic import field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, EnvSettingsSource, PydanticBaseSettingsSource, SettingsConfigDict
+
+
+class _LenientEnvSource(EnvSettingsSource):
+    """Falls back to the raw string when JSON decoding fails, allowing field validators to handle it."""
+
+    def decode_complex_value(self, field_name: str, field: Any, value: Any) -> Any:
+        try:
+            return super().decode_complex_value(field_name, field, value)
+        except Exception:
+            return value
 
 
 class Settings(BaseSettings):
@@ -41,6 +51,17 @@ class Settings(BaseSettings):
         if not v:
             return []
         return [int(x.strip()) for x in str(v).split(",") if x.strip()]
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: Type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        secrets_dir_settings: PydanticBaseSettingsSource,
+    ) -> Tuple[PydanticBaseSettingsSource, ...]:
+        return (init_settings, _LenientEnvSource(settings_cls), dotenv_settings, secrets_dir_settings)
 
 
 settings = Settings()

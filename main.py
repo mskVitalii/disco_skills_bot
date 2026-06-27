@@ -82,7 +82,7 @@ async def webhook(request: Request) -> dict:
     return {"ok": True}
 
 
-@app.get("/")
+@app.get("/health")
 async def health() -> dict:
     return {"status": "ok", "bot": (await bot.get_me()).username}
 
