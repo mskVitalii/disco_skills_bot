@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import time
 from contextlib import asynccontextmanager
 
@@ -32,28 +33,64 @@ dp = Dispatcher(storage=storage)
 dp.include_router(main_router)
 
 _polling_task: asyncio.Task | None = None
+_init_task: asyncio.Task | None = None
 _bot_username: str | None = None
+_ready: bool = False
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    global _polling_task, _bot_username
-    await init_db()
+async def _background_init() -> None:
+    global _polling_task, _bot_username, _ready
 
-    me = await bot.get_me()
-    _bot_username = me.username
-    logger.info("Bot ready: @%s (id=%d)", me.username, me.id)
+    for attempt in range(30):
+        try:
+            await init_db()
+            logger.info("Database connected")
+            break
+        except Exception as exc:
+            logger.warning("DB not ready (attempt %d/30): %s", attempt + 1, exc)
+            if attempt < 29:
+                await asyncio.sleep(3)
+            else:
+                logger.error("DB connection failed after 30 attempts — giving up")
+                return
+
+    try:
+        me = await bot.get_me()
+        _bot_username = me.username
+        logger.info("Bot ready: @%s (id=%d)", me.username, me.id)
+    except Exception as exc:
+        logger.error("Failed to get bot info: %s", exc)
+        return
 
     if settings.WEBHOOK_URL:
         webhook_url = f"{settings.WEBHOOK_URL.rstrip('/')}/webhook"
-        await bot.set_webhook(webhook_url, drop_pending_updates=True)
-        logger.info("Webhook set: %s", webhook_url)
+        try:
+            await bot.set_webhook(webhook_url, drop_pending_updates=True)
+            logger.info("Webhook set: %s", webhook_url)
+        except Exception as exc:
+            logger.error("Failed to set webhook: %s", exc)
+            return
     else:
         _polling_task = asyncio.create_task(_run_polling())
         logger.info("Polling started")
 
-    logger.info("Startup complete — allowed_users=%s", settings.ALLOWED_USER_IDS or "all")
+    _ready = True
+    logger.info("Init complete — allowed_users=%s", settings.ALLOWED_USER_IDS or "all")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global _init_task
+    # Background init so health endpoint responds immediately
+    _init_task = asyncio.create_task(_background_init())
     yield
+
+    if _init_task and not _init_task.done():
+        _init_task.cancel()
+        try:
+            await _init_task
+        except asyncio.CancelledError:
+            pass
 
     if _polling_task:
         _polling_task.cancel()
@@ -62,13 +99,18 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
 
-    if settings.WEBHOOK_URL:
-        await bot.delete_webhook()
+    if settings.WEBHOOK_URL and _ready:
+        try:
+            await bot.delete_webhook()
+        except Exception:
+            pass
 
-    await bot.session.close()
-    await storage.close()
-    await close_db()
-    await close_redis()
+    for coro in (bot.session.close(), storage.close(), close_db(), close_redis()):
+        try:
+            await coro
+        except Exception:
+            pass
+
     logger.info("Shutdown complete")
 
 
@@ -100,10 +142,11 @@ async def webhook(request: Request) -> dict:
 
 @app.get("/health")
 async def health() -> JSONResponse:
-    return JSONResponse({"status": "ok", "bot": _bot_username})
+    status = "ok" if _ready else "starting"
+    return JSONResponse({"status": status, "bot": _bot_username})
 
 
 if __name__ == "__main__":
     import uvicorn
-
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
