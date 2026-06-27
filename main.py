@@ -41,41 +41,85 @@ _ready: bool = False
 async def _background_init() -> None:
     global _polling_task, _bot_username, _ready
 
+    logger.info("=== Background init started ===")
+
+    # ── PostgreSQL ─────────────────────────────────────────────────────────────
+    db_dsn = settings.DATABASE_URL.split("@")[-1]  # hide credentials in logs
+    logger.info("[1/4] Connecting to PostgreSQL (%s)...", db_dsn)
     for attempt in range(30):
         try:
             await init_db()
-            logger.info("Database connected")
+            logger.info("[1/4] PostgreSQL connected on attempt %d", attempt + 1)
             break
         except Exception as exc:
-            logger.warning("DB not ready (attempt %d/30): %s", attempt + 1, exc)
+            logger.warning(
+                "[1/4] PostgreSQL not ready (attempt %d/30): %s — retrying in 3s",
+                attempt + 1, exc,
+            )
             if attempt < 29:
                 await asyncio.sleep(3)
             else:
-                logger.error("DB connection failed after 30 attempts — giving up")
+                logger.error(
+                    "[1/4] FAILED: cannot connect to PostgreSQL (%s) after 30 attempts. "
+                    "Check DATABASE_URL and that the DB service is running.",
+                    db_dsn,
+                )
                 return
 
+    # ── Redis ──────────────────────────────────────────────────────────────────
+    redis_url_safe = settings.REDIS_URL.split("@")[-1] if "@" in settings.REDIS_URL else settings.REDIS_URL
+    logger.info("[2/4] Checking Redis (%s)...", redis_url_safe)
+    try:
+        from app.core.database import get_redis
+        redis = get_redis()
+        await redis.ping()
+        logger.info("[2/4] Redis OK")
+    except Exception as exc:
+        logger.error(
+            "[2/4] FAILED: cannot reach Redis (%s): %s. "
+            "Check REDIS_URL and that the Redis service is running.",
+            redis_url_safe, exc,
+        )
+        return
+
+    # ── Telegram Bot API ───────────────────────────────────────────────────────
+    logger.info("[3/4] Calling Telegram getMe...")
     try:
         me = await bot.get_me()
         _bot_username = me.username
-        logger.info("Bot ready: @%s (id=%d)", me.username, me.id)
+        logger.info("[3/4] Telegram OK: @%s (id=%d)", me.username, me.id)
     except Exception as exc:
-        logger.error("Failed to get bot info: %s", exc)
+        logger.error(
+            "[3/4] FAILED: Telegram getMe failed: %s. "
+            "Check BOT_TOKEN and network access to api.telegram.org.",
+            exc,
+        )
         return
 
+    # ── Webhook / Polling ──────────────────────────────────────────────────────
     if settings.WEBHOOK_URL:
         webhook_url = f"{settings.WEBHOOK_URL.rstrip('/')}/webhook"
+        logger.info("[4/4] Setting webhook: %s", webhook_url)
         try:
             await bot.set_webhook(webhook_url, drop_pending_updates=True)
-            logger.info("Webhook set: %s", webhook_url)
+            logger.info("[4/4] Webhook set")
         except Exception as exc:
-            logger.error("Failed to set webhook: %s", exc)
+            logger.error(
+                "[4/4] FAILED: set_webhook failed: %s. "
+                "Check WEBHOOK_URL is publicly reachable by Telegram.",
+                exc,
+            )
             return
     else:
+        logger.info("[4/4] No WEBHOOK_URL — starting polling")
         _polling_task = asyncio.create_task(_run_polling())
-        logger.info("Polling started")
 
     _ready = True
-    logger.info("Init complete — allowed_users=%s", settings.ALLOWED_USER_IDS or "all")
+    logger.info(
+        "=== Init complete === bot=@%s allowed_users=%s",
+        _bot_username,
+        settings.ALLOWED_USER_IDS or "all",
+    )
 
 
 @asynccontextmanager
