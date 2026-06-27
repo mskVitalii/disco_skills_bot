@@ -59,9 +59,9 @@ class Settings(BaseSettings):
         init_settings: PydanticBaseSettingsSource,
         env_settings: PydanticBaseSettingsSource,
         dotenv_settings: PydanticBaseSettingsSource,
-        secrets_dir_settings: PydanticBaseSettingsSource,
+        **kwargs: Any,
     ) -> Tuple[PydanticBaseSettingsSource, ...]:
-        return (init_settings, _LenientEnvSource(settings_cls), dotenv_settings, secrets_dir_settings)
+        return (init_settings, _LenientEnvSource(settings_cls), dotenv_settings, *kwargs.values())
 
 
 settings = Settings()
