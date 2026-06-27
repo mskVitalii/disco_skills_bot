@@ -48,6 +48,7 @@ async def cb_choice(cq: CallbackQuery, state: FSMContext) -> None:
         await cq.answer()
         return
 
+    logger.info("callback choice user_id=%s data=%r", cq.from_user.id, cq.data)
     parts = cq.data.split(":")
     if len(parts) < 3:
         await cq.answer("Неверный формат")
@@ -102,6 +103,7 @@ async def cb_skill(cq: CallbackQuery) -> None:
         return
 
     skill_name = cq.data.split(":", 1)[1]
+    logger.info("callback skill user_id=%s skill=%s", cq.from_user.id, skill_name)
     await cq.answer(f"Спрашиваю {skill_name}…")
 
     user = await get_or_create_user(
@@ -126,6 +128,7 @@ async def cb_back(cq: CallbackQuery, state: FSMContext) -> None:
         await cq.answer()
         return
 
+    logger.info("callback back user_id=%s", cq.from_user.id)
     user = await get_or_create_user(
         telegram_id=cq.from_user.id,
         chat_id=cq.message.chat.id,
@@ -158,6 +161,7 @@ async def cb_new(cq: CallbackQuery, state: FSMContext) -> None:
         await cq.answer()
         return
 
+    logger.info("callback new user_id=%s", cq.from_user.id)
     user = await get_or_create_user(
         telegram_id=cq.from_user.id,
         chat_id=cq.message.chat.id,

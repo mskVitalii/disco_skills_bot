@@ -1,7 +1,11 @@
+import logging
+
 import redis.asyncio as aioredis
 from tortoise import Tortoise
 
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 TORTOISE_ORM = {
     "connections": {
@@ -25,6 +29,7 @@ _redis: aioredis.Redis | None = None
 async def init_db() -> None:
     await Tortoise.init(config=TORTOISE_ORM)
     await Tortoise.generate_schemas(safe=True)
+    logger.info("Database connected: %s", settings.DATABASE_URL.split("@")[-1])
 
 
 async def close_db() -> None:

@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from contextlib import asynccontextmanager
 
 from aiogram import Bot, Dispatcher
@@ -8,6 +9,7 @@ from aiogram.enums import ParseMode
 from aiogram.fsm.storage.redis import RedisStorage
 from aiogram.types import Update
 from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
 from app.bot.router import main_router
 from app.core.config import settings
@@ -30,13 +32,17 @@ dp = Dispatcher(storage=storage)
 dp.include_router(main_router)
 
 _polling_task: asyncio.Task | None = None
+_bot_username: str | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _polling_task
+    global _polling_task, _bot_username
     await init_db()
-    logger.info("Database initialized")
+
+    me = await bot.get_me()
+    _bot_username = me.username
+    logger.info("Bot ready: @%s (id=%d)", me.username, me.id)
 
     if settings.WEBHOOK_URL:
         webhook_url = f"{settings.WEBHOOK_URL.rstrip('/')}/webhook"
@@ -46,6 +52,7 @@ async def lifespan(app: FastAPI):
         _polling_task = asyncio.create_task(_run_polling())
         logger.info("Polling started")
 
+    logger.info("Startup complete — allowed_users=%s", settings.ALLOWED_USER_IDS or "all")
     yield
 
     if _polling_task:
@@ -74,6 +81,15 @@ async def _run_polling() -> None:
 app = FastAPI(title="Disco Skills Bot", lifespan=lifespan)
 
 
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start = time.monotonic()
+    response = await call_next(request)
+    duration_ms = (time.monotonic() - start) * 1000
+    logger.info("%s %s → %d (%.1fms)", request.method, request.url.path, response.status_code, duration_ms)
+    return response
+
+
 @app.post("/webhook")
 async def webhook(request: Request) -> dict:
     data = await request.json()
@@ -83,8 +99,8 @@ async def webhook(request: Request) -> dict:
 
 
 @app.get("/health")
-async def health() -> dict:
-    return {"status": "ok", "bot": (await bot.get_me()).username}
+async def health() -> JSONResponse:
+    return JSONResponse({"status": "ok", "bot": _bot_username})
 
 
 if __name__ == "__main__":
