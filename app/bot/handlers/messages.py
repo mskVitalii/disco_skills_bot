@@ -3,6 +3,7 @@ import re
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
+from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
@@ -12,6 +13,7 @@ from app.core.config import settings
 from app.services.ai_service import transcribe_voice
 from app.services.dialog_service import (
     get_or_create_user,
+    get_current_context_message,
     handle_user_message,
     update_node_message_id,
 )
@@ -147,6 +149,33 @@ async def handle_text_any(message: Message, state: FSMContext) -> None:
 
 
 # ─── Business account messages ───────────────────────────────────────────────
+
+@router.business_message(Command("disco"))
+async def handle_business_disco(message: Message, state: FSMContext) -> None:
+    uid = message.from_user.id if message.from_user else 0
+    logger.info("business_disco user_id=%s conn=%s", uid, message.business_connection_id)
+
+    user = await get_or_create_user(
+        telegram_id=uid,
+        chat_id=message.chat.id,
+        username=message.from_user.username if message.from_user else None,
+        first_name=(message.from_user.first_name or "") if message.from_user else "",
+    )
+
+    last_message = await get_current_context_message(user)
+    if last_message:
+        prompt = f"Голоса пробуждаются снова. Мысли возвращаются к: «{last_message[:120]}»"
+    else:
+        prompt = "Детектив молчит. Тишина. Голоса внутри начинают говорить сами по себе."
+
+    thinking = await message.answer("🎭 Голоса пробуждаются...")
+    text, ai_result, node_id = await handle_user_message(user=user, user_message=prompt)
+    kb = dialog_keyboard(ai_result, node_id, show_back=bool(last_message))
+    await thinking.delete()
+    sent = await message.answer(text, parse_mode="HTML", reply_markup=kb)
+    await update_node_message_id(node_id, sent.message_id)
+    await state.set_state(DialogState.active)
+
 
 @router.business_message(F.text)
 async def handle_business_text(message: Message, state: FSMContext) -> None:
