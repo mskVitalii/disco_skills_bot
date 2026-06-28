@@ -8,29 +8,22 @@ from aiogram.types import CallbackQuery
 from app.bot.keyboards.inline import (
     back_keyboard,
     dialog_keyboard,
-    empty_keyboard,
     skills_keyboard,
     enumeration_keyboard,
 )
 from app.bot.states import DialogState
-from app.core.config import settings
 from app.services.dialog_service import (
     get_or_create_user,
     handle_go_back,
     handle_skill_deep_dive,
     handle_user_message,
+    perform_skill_check,
     reset_dialog,
     update_node_message_id,
 )
 
 logger = logging.getLogger(__name__)
 router = Router(name="callbacks")
-
-
-def _is_allowed(telegram_id: int) -> bool:
-    if not settings.ALLOWED_USER_IDS:
-        return True
-    return telegram_id in settings.ALLOWED_USER_IDS
 
 
 async def _edit_or_send(cq: CallbackQuery, text: str, reply_markup=None) -> None:
@@ -45,10 +38,6 @@ async def _edit_or_send(cq: CallbackQuery, text: str, reply_markup=None) -> None
 
 @router.callback_query(F.data.startswith("enum:"))
 async def cb_enum(cq: CallbackQuery, state: FSMContext) -> None:
-    if not _is_allowed(cq.from_user.id):
-        await cq.answer()
-        return
-
     try:
         index = int(cq.data.split(":", 1)[1])
     except (ValueError, IndexError):
@@ -65,7 +54,7 @@ async def cb_enum(cq: CallbackQuery, state: FSMContext) -> None:
     chosen = items[index]
 
     try:
-        await cq.message.edit_reply_markup(reply_markup=empty_keyboard())
+        await cq.message.edit_reply_markup(reply_markup=None)
     except Exception:
         pass
 
@@ -103,10 +92,6 @@ async def cb_enum(cq: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data.startswith("choice:"))
 async def cb_choice(cq: CallbackQuery, state: FSMContext) -> None:
-    if not _is_allowed(cq.from_user.id):
-        await cq.answer()
-        return
-
     logger.info("callback choice user_id=%s data=%r", cq.from_user.id, cq.data)
     parts = cq.data.split(":")
     if len(parts) < 3:
@@ -115,15 +100,13 @@ async def cb_choice(cq: CallbackQuery, state: FSMContext) -> None:
 
     option_index = int(parts[2])
 
-    # Remove buttons from the current message (choice made)
     try:
-        await cq.message.edit_reply_markup(reply_markup=empty_keyboard())
+        await cq.message.edit_reply_markup(reply_markup=None)
     except TelegramBadRequest:
         pass
 
     await cq.answer()
 
-    # Retrieve node data from cache to get option text
     from app.services.dialog_service import _load_node_cache, get_redis
     redis = get_redis()
     node_id = int(parts[1])
@@ -160,14 +143,67 @@ async def cb_choice(cq: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(DialogState.active)
 
 
+# ─── roll:{node_id}:{skill_index} ────────────────────────────────────────────
+
+@router.callback_query(F.data.startswith("roll:"))
+async def cb_roll(cq: CallbackQuery) -> None:
+    parts = cq.data.split(":")
+    if len(parts) < 3:
+        await cq.answer("Ошибка")
+        return
+
+    try:
+        node_id = int(parts[1])
+        skill_index = int(parts[2])
+    except ValueError:
+        await cq.answer("Ошибка")
+        return
+
+    from app.services.dialog_service import _load_node_cache, get_redis
+    redis = get_redis()
+    cache = await _load_node_cache(redis, node_id)
+    if not cache:
+        await cq.answer("Данные истекли.")
+        return
+
+    skill_names = cache.get("skill_names", [])
+    checks = cache.get("checks", [])
+
+    if skill_index >= len(skill_names) or skill_index >= len(checks):
+        await cq.answer("Проверка недоступна.")
+        return
+
+    skill_name = skill_names[skill_index]
+    check = checks[skill_index]
+
+    if not check.get("has_check"):
+        await cq.answer("Нет проверки.")
+        return
+
+    await cq.answer("Бросаю кубики…")
+
+    # Remove the roll button after it's been used
+    try:
+        await cq.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
+    user = await get_or_create_user(
+        telegram_id=cq.from_user.id,
+        chat_id=cq.message.chat.id,
+        username=cq.from_user.username,
+        first_name=cq.from_user.first_name or "",
+    )
+
+    result_text = await perform_skill_check(user, skill_name, check)
+    if result_text:
+        await cq.message.answer(result_text, parse_mode="HTML")
+
+
 # ─── skill:{skill_name} ───────────────────────────────────────────────────────
 
 @router.callback_query(F.data.startswith("skill:"))
 async def cb_skill(cq: CallbackQuery) -> None:
-    if not _is_allowed(cq.from_user.id):
-        await cq.answer()
-        return
-
     skill_name = cq.data.split(":", 1)[1]
     logger.info("callback skill user_id=%s skill=%s", cq.from_user.id, skill_name)
     await cq.answer(f"Спрашиваю {skill_name}…")
@@ -190,10 +226,6 @@ async def cb_skill(cq: CallbackQuery) -> None:
 
 @router.callback_query(F.data == "back")
 async def cb_back(cq: CallbackQuery, state: FSMContext) -> None:
-    if not _is_allowed(cq.from_user.id):
-        await cq.answer()
-        return
-
     logger.info("callback back user_id=%s", cq.from_user.id)
     user = await get_or_create_user(
         telegram_id=cq.from_user.id,
@@ -223,10 +255,6 @@ async def cb_back(cq: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "new")
 async def cb_new(cq: CallbackQuery, state: FSMContext) -> None:
-    if not _is_allowed(cq.from_user.id):
-        await cq.answer()
-        return
-
     logger.info("callback new user_id=%s", cq.from_user.id)
     user = await get_or_create_user(
         telegram_id=cq.from_user.id,

@@ -2,6 +2,7 @@ import logging
 import re
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
@@ -44,10 +45,8 @@ logger = logging.getLogger(__name__)
 router = Router(name="messages")
 
 
-def _is_allowed(telegram_id: int) -> bool:
-    if not settings.ALLOWED_USER_IDS:
-        return True
-    return telegram_id in settings.ALLOWED_USER_IDS
+def _is_owner(telegram_id: int) -> bool:
+    return settings.BOT_OWNER_ID is not None and telegram_id == settings.BOT_OWNER_ID
 
 
 async def _get_or_init_user(message: Message):
@@ -80,6 +79,7 @@ async def _process_text(message: Message, text: str, state: FSMContext) -> None:
     thinking = None
     try:
         user = await _get_or_init_user(message)
+        thinking = await message.answer("⏳")
         try:
             await message.bot.send_chat_action(chat_id=message.chat.id, action="typing")
         except Exception:
@@ -91,10 +91,21 @@ async def _process_text(message: Message, text: str, state: FSMContext) -> None:
         )
 
         if not ai_result.skill_responses:
+            try:
+                await thinking.delete()
+            except Exception:
+                pass
             return
 
         kb = dialog_keyboard(ai_result, node_id, show_back=True)
-        sent = await message.answer(text_response, parse_mode="HTML", reply_markup=kb)
+        try:
+            sent = await thinking.edit_text(text_response, parse_mode="HTML", reply_markup=kb)
+        except TelegramBadRequest:
+            try:
+                await thinking.delete()
+            except Exception:
+                pass
+            sent = await message.answer(text_response, parse_mode="HTML", reply_markup=kb)
         await update_node_message_id(node_id, sent.message_id)
         await state.set_state(DialogState.active)
     except Exception:
@@ -111,8 +122,7 @@ async def _process_text(message: Message, text: str, state: FSMContext) -> None:
 
 @router.message(F.text, DialogState.active)
 async def handle_text_active(message: Message, state: FSMContext) -> None:
-    if not _is_allowed(message.from_user.id):
-        return
+
     text = (message.text or "").strip()
     if not text or text.startswith("/"):
         return
@@ -123,8 +133,7 @@ async def handle_text_active(message: Message, state: FSMContext) -> None:
 # Auto-activate for users who skipped /start
 @router.message(F.text)
 async def handle_text_any(message: Message, state: FSMContext) -> None:
-    if not _is_allowed(message.from_user.id):
-        return
+
     text = (message.text or "").strip()
     if not text or text.startswith("/"):
         return
@@ -149,7 +158,8 @@ async def handle_business_text(message: Message, state: FSMContext) -> None:
     )
     if not text or text.startswith("/"):
         return
-    if not _is_allowed(uid):
+    # Skip owner's own messages — bot only responds to /disco for the owner
+    if _is_owner(uid):
         return
     await _process_text(message, text, state)
 
@@ -158,9 +168,6 @@ async def handle_business_text(message: Message, state: FSMContext) -> None:
 
 @router.message(F.voice)
 async def handle_voice(message: Message, state: FSMContext) -> None:
-    if not _is_allowed(message.from_user.id):
-        return
-
     voice = message.voice
     if not voice:
         return
@@ -191,8 +198,7 @@ async def handle_voice(message: Message, state: FSMContext) -> None:
 
 @router.message(F.video_note)
 async def handle_video_note(message: Message, state: FSMContext) -> None:
-    if not _is_allowed(message.from_user.id):
-        return
+
 
     video_note = message.video_note
     if not video_note:

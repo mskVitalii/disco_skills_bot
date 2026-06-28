@@ -6,12 +6,13 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
 from app.bot.states import DialogState
-from app.core.config import settings
 from app.data.skills import ALL_SKILLS, CATEGORIES
 from app.models.user import User, UserSkillLevel
 from app.services.dialog_service import (
     get_or_create_user,
     get_current_context_message,
+    get_skill_stats,
+    get_user_ideas,
     handle_scene_command,
     handle_user_message,
     reset_dialog,
@@ -23,16 +24,9 @@ logger = logging.getLogger(__name__)
 router = Router(name="commands")
 
 
-def _is_allowed(telegram_id: int) -> bool:
-    if not settings.ALLOWED_USER_IDS:
-        return True
-    return telegram_id in settings.ALLOWED_USER_IDS
-
-
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext) -> None:
-    if not _is_allowed(message.from_user.id):
-        return
+
     logger.info("/start user_id=%s username=%s", message.from_user.id, message.from_user.username)
 
     user = await get_or_create_user(
@@ -52,6 +46,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         "/disco — позвать голоса прямо сейчас\n"
         "/scene <i>описание</i> — создать сцену для игры\n"
         "/skills — текущие уровни характеристик\n"
+        "/stats — статистика голосов и магистральные идеи\n"
         "/new — сбросить текущий диалог",
         parse_mode="HTML",
     )
@@ -59,8 +54,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
 
 @router.message(Command("new"))
 async def cmd_new(message: Message, state: FSMContext) -> None:
-    if not _is_allowed(message.from_user.id):
-        return
+
     logger.info("/new user_id=%s", message.from_user.id)
 
     user = await User.get_or_none(telegram_id=message.from_user.id)
@@ -73,8 +67,7 @@ async def cmd_new(message: Message, state: FSMContext) -> None:
 
 @router.message(Command("scene"))
 async def cmd_scene(message: Message, state: FSMContext) -> None:
-    if not _is_allowed(message.from_user.id):
-        return
+
     logger.info("/scene user_id=%s text=%r", message.from_user.id, message.text)
 
     # Extract description after /scene
@@ -95,8 +88,7 @@ async def cmd_scene(message: Message, state: FSMContext) -> None:
 
 @router.message(DialogState.waiting_scene)
 async def scene_description_received(message: Message, state: FSMContext) -> None:
-    if not _is_allowed(message.from_user.id):
-        return
+
 
     description = (message.text or "").strip()
     if not description:
@@ -132,8 +124,7 @@ async def _process_scene(message: Message, state: FSMContext, description: str) 
 
 @router.message(Command("disco"))
 async def cmd_disco(message: Message, state: FSMContext) -> None:
-    if not _is_allowed(message.from_user.id):
-        return
+
     logger.info("/disco user_id=%s", message.from_user.id)
 
     user = await get_or_create_user(
@@ -160,10 +151,45 @@ async def cmd_disco(message: Message, state: FSMContext) -> None:
     await state.set_state(DialogState.active)
 
 
+@router.message(Command("stats"))
+async def cmd_stats(message: Message) -> None:
+
+    logger.info("/stats user_id=%s", message.from_user.id)
+
+    user = await get_or_create_user(
+        telegram_id=message.from_user.id,
+        chat_id=message.chat.id,
+        username=message.from_user.username,
+        first_name=message.from_user.first_name or "",
+    )
+
+    stats = await get_skill_stats(user)
+    ideas = await get_user_ideas(user, limit=10)
+
+    if not stats:
+        await message.answer("Характеристики пока молчали — статистики нет.")
+        return
+
+    lines = ["<b>📊 Статистика вызовов:</b>\n"]
+    total = sum(c for _, c in stats)
+    for skill_name, count in stats[:15]:
+        skill = ALL_SKILLS.get(skill_name)
+        emoji = skill.emoji if skill else "•"
+        pct = int(count / total * 100) if total else 0
+        bar = "█" * min(pct // 5, 20)
+        lines.append(f"{emoji} {skill_name}: {bar} {count} ({pct}%)")
+
+    if ideas:
+        lines.append("\n<b>💡 Магистральные идеи:</b>")
+        for idea in ideas:
+            lines.append(f"• {idea}")
+
+    await message.answer("\n".join(lines), parse_mode="HTML")
+
+
 @router.message(Command("skills"))
 async def cmd_skills(message: Message) -> None:
-    if not _is_allowed(message.from_user.id):
-        return
+
     logger.info("/skills user_id=%s", message.from_user.id)
 
     user = await get_or_create_user(

@@ -25,14 +25,15 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         case_sensitive=True,
         env_ignore_empty=True,
+        extra="ignore",
     )
 
     # Telegram
     BOT_TOKEN: str
     WEBHOOK_URL: Optional[str] = None
 
-    # Allowed users (empty = all allowed)
-    ALLOWED_USER_IDS: list[int] = []
+    # Owner ID — bot ignores owner's own messages in business chats (respond only to /disco)
+    BOT_OWNER_ID: Optional[int] = None
 
     # Database
     DATABASE_URL: str = "postgres://disco_user:disco_pass@localhost:5432/disco_db"
@@ -57,15 +58,6 @@ class Settings(BaseSettings):
     def normalize_db_scheme(cls, v: str) -> str:
         # Tortoise ORM requires "postgres://" — Railway and some providers use "postgresql://"
         return v.replace("postgresql://", "postgres://", 1) if isinstance(v, str) else v
-
-    @field_validator("ALLOWED_USER_IDS", mode="before")
-    @classmethod
-    def parse_user_ids(cls, v: str | list) -> list[int]:
-        if isinstance(v, list):
-            return v
-        if not v:
-            return []
-        return [int(x.strip()) for x in str(v).split(",") if x.strip()]
 
     def get_redis_url(self) -> str:
         """Build Redis URL from individual Railway plugin vars if available."""

@@ -66,15 +66,19 @@ class DialogAIResult:
 # ── System prompts ─────────────────────────────────────────────────────────
 
 _SYSTEM_GENERATE = """Ты — игра Disco Elysium в формате Telegram-бота.
-Несколько характеристик (внутренних голосов) реагируют на сообщение пользователя.
+Внутренние голоса-характеристики комментируют сообщение пользователя.
 
 Правила:
-- Выбери 1–2 наиболее подходящих характеристики. Только те, которым есть что сказать по существу.
-- В поле skill указывай ТОЛЬКО название характеристики заглавными буквами, без эмодзи. Например: АНДРОГИННОСТЬ, ЛОГИКА, ЭМПАТИЯ
-- Каждый голос говорит ровно 1 предложение — острое, точное, строго в стиле из описания. Не больше. Только если есть что сказать.
-- Если у характеристики в описании написано "матерится" — мат обязателен, не опционален.
-- dialog_option — короткая реплика или действие от имени этой характеристики, макс 40 символов
-- Если очень уместно — добавь проверку (has_check=true), но не злоупотребляй
+- Выбери ТОЛЬКО 1 характеристику — ту, которой ДЕЙСТВИТЕЛЬНО есть что сказать. Не больше.
+- Если ни одной характеристике нечего добавить — верни пустой список responses: []
+- В поле skill указывай ТОЛЬКО название заглавными буквами, без эмодзи. Например: ЛОГИКА, ЭМПАТИЯ
+- Голос говорит ровно 1 предложение — острое, точное, в своём стиле. Никаких вводных слов.
+- Если у характеристики написано "матерится" — мат обязателен.
+- dialog_option — короткая реплика или действие, макс 40 символов
+- has_check: только если есть реальный интересный исход — конкретный факт, который может вскрыться, или действие, которое может не получиться. Без проверок на абстрактные «понять», «уловить», «осознать».
+- check_description — конкретное действие на кнопке, глагол + объект (макс 40 символов). Например: "Вспомнить год постройки", "Угадать мотив"
+- success_text — КОНКРЕТНЫЙ факт/деталь/реплика при успехе. Не "всплывает что-то" — а именно ЧТО всплыло
+- failure_text — конкретная горькая ремарка при провале. Не "не получилось" — а что именно пошло не так
 
 Список характеристик:
 {skills_list}"""
@@ -93,12 +97,19 @@ _SYSTEM_SKILL_DEEP = """Ты — характеристика {skill_name} ({ski
 Дай развёрнутый ответ (3–5 предложений) в своём стиле.
 Если уместно — предложи конкретное действие или провокационный вопрос."""
 
+_SYSTEM_EXTRACT_IDEAS = """Ты анализируешь переписку и выявляешь магистральные идеи собеседника.
+Верни JSON: {"ideas": ["идея 1", "идея 2"]} — 0–2 ключевые темы/паттерны/ценности.
+Каждая идея — ёмкая фраза до 80 символов. Только если идея устойчивая и существенная.
+Если ничего нового — {"ideas": []}."""
+
 
 # ── Public API ─────────────────────────────────────────────────────────────
 
 async def generate_skill_responses(
     user_message: str,
     context_messages: list[dict] | None = None,
+    user_ideas: list[str] | None = None,
+    semantic_context: list[str] | None = None,
 ) -> DialogAIResult:
     skills_list = skill_list_for_prompt()
 
@@ -109,8 +120,24 @@ async def generate_skill_responses(
         }
     ]
 
+    # Inject user profile as a second system message
+    if user_ideas:
+        ideas_text = "\n".join(f"- {idea}" for idea in user_ideas)
+        messages.append({
+            "role": "system",
+            "content": f"Образ пользователя (магистральные идеи):\n{ideas_text}",
+        })
+
+    # Inject semantically similar past messages as additional context
+    if semantic_context:
+        similar_text = "\n".join(f"- {m}" for m in semantic_context)
+        messages.append({
+            "role": "system",
+            "content": f"Похожие темы из прошлых разговоров:\n{similar_text}",
+        })
+
     if context_messages:
-        messages.extend(context_messages[-6:])
+        messages.extend(context_messages[-14:])
 
     messages.append({"role": "user", "content": user_message})
 
@@ -192,6 +219,48 @@ async def generate_skill_deep_response(
     except Exception as e:
         logger.error("OpenAI generate_skill_deep_response error: %s", e)
         return ""
+
+
+async def extract_major_ideas(
+    conversation_text: str,
+    existing_ideas: list[str] | None = None,
+) -> list[str]:
+    """Extract key themes/ideas from conversation. Returns list of idea strings."""
+    context = ""
+    if existing_ideas:
+        context = f"Уже известные идеи:\n" + "\n".join(f"- {i}" for i in existing_ideas) + "\n\n"
+
+    try:
+        response = await get_openai().chat.completions.create(
+            model=settings.OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": _SYSTEM_EXTRACT_IDEAS},
+                {"role": "user", "content": f"{context}Переписка:\n{conversation_text}"},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.3,
+            max_completion_tokens=200,
+        )
+        import json
+        content = response.choices[0].message.content or "{}"
+        data = json.loads(content)
+        return [str(i) for i in data.get("ideas", [])]
+    except Exception as e:
+        logger.error("OpenAI extract_major_ideas error: %s", e)
+        return []
+
+
+async def generate_embedding(text: str) -> list[float] | None:
+    """Generate a 1536-dim embedding for semantic search. Returns None on failure."""
+    try:
+        response = await get_openai().embeddings.create(
+            model="text-embedding-3-small",
+            input=text[:8000],
+        )
+        return response.data[0].embedding
+    except Exception as e:
+        logger.error("OpenAI embedding error: %s", e)
+        return None
 
 
 async def transcribe_voice(file_bytes: bytes, filename: str = "voice.ogg") -> str:

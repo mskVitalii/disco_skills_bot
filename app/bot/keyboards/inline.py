@@ -19,34 +19,25 @@ def dialog_keyboard(
     rows: list[list[InlineKeyboardButton]] = []
 
     for i, sr in enumerate(ai_result.skill_responses):
-        if not sr.dialog_option:
-            continue
         skill = ALL_SKILLS.get(sr.skill_name)
         emoji = skill.emoji if skill else ""
-        cb = f"choice:{node_id}:{i}"
-        label = f"{emoji} {_truncate(sr.dialog_option, 36)}"
-        rows.append([InlineKeyboardButton(text=label, callback_data=cb)])
+
+        if sr.dialog_option:
+            cb = f"choice:{node_id}:{i}"
+            label = f"{emoji} {_truncate(sr.dialog_option, 36)}"
+            rows.append([InlineKeyboardButton(text=label, callback_data=cb)])
+
+        if sr.has_check and sr.check_description:
+            cb = f"roll:{node_id}:{i}"
+            label = f"🎲 {_truncate(sr.check_description, 36)}"
+            rows.append([InlineKeyboardButton(text=label, callback_data=cb)])
 
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def empty_keyboard() -> InlineKeyboardMarkup:
-    """Keyboard with only 'New dialog' button — used when editing old messages."""
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="✦ Новый диалог", callback_data="new")]
-        ]
-    )
-
-
 def back_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="◀ Назад", callback_data="back"),
-                InlineKeyboardButton(text="✦ Новый", callback_data="new"),
-            ]
-        ]
+        inline_keyboard=[[InlineKeyboardButton(text="◀ Назад", callback_data="back")]]
     )
 
 
@@ -58,7 +49,6 @@ def enumeration_keyboard(items: list[str]) -> InlineKeyboardMarkup:
             text=_truncate(item, 40),
             callback_data=f"enum:{i}",
         )])
-    rows.append([InlineKeyboardButton(text="✦ Новый", callback_data="new")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -78,5 +68,4 @@ def skills_keyboard(skill_names: list[str]) -> InlineKeyboardMarkup:
         )
     for i in range(0, len(buttons), 2):
         rows.append(buttons[i : i + 2])
-    rows.append([InlineKeyboardButton(text="✦ Новый", callback_data="new")])
     return InlineKeyboardMarkup(inline_keyboard=rows)

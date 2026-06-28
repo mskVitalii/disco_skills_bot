@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 from dataclasses import asdict
@@ -7,10 +8,13 @@ import redis.asyncio as aioredis
 from app.core.database import get_redis
 from app.data.skills import ALL_SKILLS
 from app.models.dialog import Dialog, DialogNode
+from app.models.stats import SkillInvocationStat, UserMajorIdea
 from app.models.user import User, UserSkillLevel
 from app.services.ai_service import (
     DialogAIResult,
     SkillResponse,
+    extract_major_ideas,
+    generate_embedding,
     generate_scene,
     generate_skill_deep_response,
     generate_skill_responses,
@@ -93,31 +97,32 @@ async def format_skill_block(
 
     header = f"{skill.emoji} <i>{skill.name}</i>"
     body = sr.text
+    return f"{header}\n{body}"
 
-    if not sr.has_check:
-        return f"{header}\n{body}"
 
-    level = await get_skill_level(user, sr.skill_name)
-    roll = roll_check(level, sr.check_difficulty)
+async def perform_skill_check(user: User, skill_name: str, check: dict) -> str:
+    """Roll dice for a deferred skill check and return the formatted result."""
+    skill = ALL_SKILLS.get(skill_name)
+    if not skill:
+        return ""
+
+    level = await get_skill_level(user, skill_name)
+    difficulty = check.get("check_difficulty", 10)
+    roll = roll_check(level, difficulty)
     logger.info(
         "[dialog] dice roll %s: d1=%d d2=%d level=%d total=%d vs %d → %s",
-        sr.skill_name, roll.die1, roll.die2, level, roll.total, sr.check_difficulty,
+        skill_name, roll.die1, roll.die2, level, roll.total, difficulty,
         "SUCCESS" if roll.is_success else "FAIL",
     )
 
-    check_line = ""
-    if sr.check_description:
-        check_line = f"\n<i>{sr.check_description}</i>\n"
-
     roll_line = roll.format_html()
-
     extra = ""
-    if roll.is_success and sr.success_text:
-        extra = f"\n{sr.success_text}"
-    elif not roll.is_success and sr.failure_text:
-        extra = f"\n{sr.failure_text}"
+    if roll.is_success and check.get("success_text"):
+        extra = f"\n{check['success_text']}"
+    elif not roll.is_success and check.get("failure_text"):
+        extra = f"\n{check['failure_text']}"
 
-    return f"{header}\n{body}{check_line}\n{roll_line}{extra}"
+    return f"{roll_line}{extra}"
 
 
 async def build_response_message(
@@ -135,6 +140,129 @@ async def build_response_message(
         logger.warning("[dialog] no skill blocks produced — skill_responses=%d", len(ai_result.skill_responses))
 
     return "\n\n".join(blocks)
+
+
+# ─── Statistics ──────────────────────────────────────────────────────────────
+
+async def track_skill_invocations(user: User, skill_names: list[str]) -> None:
+    for name in skill_names:
+        stat, created = await SkillInvocationStat.get_or_create(
+            user=user, skill_name=name, defaults={"count": 0}
+        )
+        if not created:
+            await SkillInvocationStat.filter(id=stat.id).update(count=stat.count + 1)
+        else:
+            await SkillInvocationStat.filter(id=stat.id).update(count=1)
+
+
+async def get_skill_stats(user: User) -> list[tuple[str, int]]:
+    """Returns list of (skill_name, count) sorted by count descending."""
+    stats = await SkillInvocationStat.filter(user=user).order_by("-count").all()
+    return [(s.skill_name, s.count) for s in stats]
+
+
+# ─── Major ideas ──────────────────────────────────────────────────────────────
+
+async def _extract_and_save_ideas(user: User, conversation_snippet: str) -> None:
+    try:
+        existing = await UserMajorIdea.filter(user=user).order_by("-created_at").limit(10).all()
+        existing_texts = [i.idea for i in existing]
+        new_ideas = await extract_major_ideas(conversation_snippet, existing_texts)
+        for idea in new_ideas:
+            await UserMajorIdea.create(user=user, idea=idea)
+            logger.info("[ideas] saved new idea for user=%s: %r", user.telegram_id, idea[:60])
+    except Exception as e:
+        logger.error("[ideas] extraction failed: %s", e)
+
+
+async def get_user_ideas(user: User, limit: int = 5) -> list[str]:
+    ideas = await UserMajorIdea.filter(user=user).order_by("-created_at").limit(limit).all()
+    return [i.idea for i in ideas]
+
+
+# ─── Semantic search (pgvector) ──────────────────────────────────────────────
+
+async def _store_embedding(node_id: int, embedding: list[float]) -> None:
+    vec_str = "[" + ",".join(str(v) for v in embedding) + "]"
+    try:
+        from tortoise import connections
+        conn = connections.get("default")
+        await conn.execute_query(
+            "UPDATE dialog_nodes SET embedding = $1::vector WHERE id = $2",
+            [vec_str, node_id],
+        )
+    except Exception as e:
+        logger.error("[embed] store failed node_id=%s: %s", node_id, e)
+
+
+async def semantic_search(
+    user_telegram_id: int,
+    query_embedding: list[float],
+    exclude_dialog_id: str | None = None,
+    limit: int = 3,
+) -> list[str]:
+    """Find user messages from past dialogs that are semantically similar to the query."""
+    vec_str = "[" + ",".join(str(v) for v in query_embedding) + "]"
+    try:
+        from tortoise import connections
+        conn = connections.get("default")
+        exclude_clause = "AND d.id != $4::uuid" if exclude_dialog_id else ""
+        params: list = [vec_str, user_telegram_id, limit]
+        if exclude_dialog_id:
+            params.append(exclude_dialog_id)
+
+        _, rows = await conn.execute_query(
+            f"""SELECT dn.user_message,
+                       1 - (dn.embedding <=> $1::vector) AS similarity
+                FROM dialog_nodes dn
+                JOIN dialogs d ON dn.dialog = d.id
+                JOIN users u ON d.user_id = u.id
+                WHERE u.telegram_id = $2
+                  AND dn.embedding IS NOT NULL
+                  {exclude_clause}
+                ORDER BY dn.embedding <=> $1::vector
+                LIMIT $3""",
+            params,
+        )
+        # rows is a list of asyncpg Record objects
+        results = []
+        for row in rows:
+            sim = float(row["similarity"])
+            if sim >= 0.75:
+                results.append(str(row["user_message"]))
+        logger.info("[embed] semantic_search found %d similar msgs (threshold 0.75)", len(results))
+        return results
+    except Exception as e:
+        logger.warning("[embed] semantic_search failed: %s", e)
+        return []
+
+
+async def _generate_and_store_embedding(node_id: int, text: str) -> None:
+    embedding = await generate_embedding(text)
+    if embedding:
+        await _store_embedding(node_id, embedding)
+
+
+# ─── Recent context loader ────────────────────────────────────────────────────
+
+async def _get_dialog_context(dialog_id: str, exclude_last: bool = True) -> list[dict]:
+    """Load last ~15 dialog nodes as chat messages for AI context."""
+    nodes = await DialogNode.filter(dialog__id=dialog_id).order_by("-created_at").limit(16).all()
+    nodes = list(reversed(nodes))
+    if exclude_last and nodes:
+        nodes = nodes[:-1]  # exclude current (not yet created)
+
+    messages = []
+    for node in nodes[-15:]:
+        messages.append({"role": "user", "content": node.user_message})
+        if node.skill_responses:
+            parts = []
+            for sr in node.skill_responses:
+                if isinstance(sr, dict) and sr.get("text"):
+                    parts.append(f"{sr.get('skill_name', '')}: {sr['text']}")
+            if parts:
+                messages.append({"role": "assistant", "content": "\n".join(parts)})
+    return messages
 
 
 # ─── Dialog orchestration ─────────────────────────────────────────────────────
@@ -159,11 +287,40 @@ async def handle_user_message(
 
     if not dialog:
         dialog = await Dialog.create(user=user, title=user_message[:100])
+        dialog_id = str(dialog.id)
+
+    # Load recent dialog messages and semantic search in parallel
+    tasks = []
+    if context_messages is None and dialog_id:
+        tasks.append(_get_dialog_context(dialog_id))
+    else:
+        tasks.append(asyncio.sleep(0))  # placeholder
+
+    tasks.append(get_user_ideas(user))
+    tasks.append(generate_embedding(user_message))
+
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    if context_messages is None:
+        context_messages = results[0] if isinstance(results[0], list) else []
+    user_ideas = results[1] if isinstance(results[1], list) else []
+    query_embedding = results[2] if isinstance(results[2], list) else None
+
+    # Semantic search in past dialogs (outside current dialog)
+    semantic_msgs: list[str] = []
+    if query_embedding:
+        semantic_msgs = await semantic_search(
+            user_telegram_id=user.telegram_id,
+            query_embedding=query_embedding,
+            exclude_dialog_id=dialog_id,
+        )
 
     logger.info("[dialog] generating response for user_id=%s msg=%r", user.telegram_id, user_message[:80])
     ai_result = await generate_skill_responses(
         user_message=user_message,
         context_messages=context_messages,
+        user_ideas=user_ideas,
+        semantic_context=semantic_msgs,
     )
     logger.info(
         "[dialog] ai_result: skills=%s options=%s",
@@ -199,8 +356,36 @@ async def handle_user_message(
         "options": [sr.dialog_option for sr in ai_result.skill_responses],
         "skill_names": [sr.skill_name for sr in ai_result.skill_responses],
         "parent_node_id": parent_node_id,
+        "checks": [
+            {
+                "has_check": sr.has_check,
+                "check_difficulty": sr.check_difficulty,
+                "check_description": sr.check_description,
+                "success_text": sr.success_text,
+                "failure_text": sr.failure_text,
+            }
+            for sr in ai_result.skill_responses
+        ],
     }
     await _save_node_cache(redis, node.id, node_cache)
+
+    # Track skill invocation stats
+    invoked = [sr.skill_name for sr in ai_result.skill_responses]
+    if invoked:
+        asyncio.create_task(track_skill_invocations(user, invoked))
+
+    # Store embedding for this node (reuse already-fetched embedding or generate fresh)
+    if query_embedding:
+        asyncio.create_task(_store_embedding(node.id, query_embedding))
+    else:
+        asyncio.create_task(_generate_and_store_embedding(node.id, user_message))
+
+    # Fire-and-forget: extract major ideas from conversation
+    if context_messages:
+        snippet = f"{user_message}\n" + "\n".join(
+            m["content"] for m in context_messages[-6:] if m.get("role") == "user"
+        )
+        asyncio.create_task(_extract_and_save_ideas(user, snippet))
 
     return text, ai_result, node.id
 

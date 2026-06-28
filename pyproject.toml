@@ -15,6 +15,7 @@ dependencies = [
     "pydantic-settings>=2.6.0",
     "python-dotenv>=1.0.0",
     "aiofiles>=24.1.0",
+    "pgvector>=0.4.2",
 ]
 
 [tool.aerich]
