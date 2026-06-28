@@ -1,10 +1,11 @@
 import logging
+import re
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
-from app.bot.keyboards.inline import dialog_keyboard
+from app.bot.keyboards.inline import dialog_keyboard, enumeration_keyboard
 from app.bot.states import DialogState
 from app.core.config import settings
 from app.services.ai_service import transcribe_voice
@@ -13,6 +14,31 @@ from app.services.dialog_service import (
     handle_user_message,
     update_node_message_id,
 )
+
+_NUMBERED_RE = re.compile(r'^\s*\d+[.)]\s+(.+)$')
+_BULLET_RE = re.compile(r'^\s*[-•*]\s+(.+)$')
+
+
+def _detect_enumeration(text: str) -> list[str] | None:
+    lines = [l for l in text.strip().splitlines() if l.strip()]
+    if len(lines) < 2:
+        return None
+    # Allow one optional header line before the list (e.g. "Дай мне память:")
+    start = 0
+    if not (_NUMBERED_RE.match(lines[0]) or _BULLET_RE.match(lines[0])):
+        start = 1
+    items: list[str] = []
+    for line in lines[start:]:
+        m = _NUMBERED_RE.match(line)
+        if m:
+            items.append(m.group(1).strip())
+            continue
+        m = _BULLET_RE.match(line)
+        if m:
+            items.append(m.group(1).strip())
+            continue
+        return None  # non-list line inside list body breaks the pattern
+    return items if len(items) >= 2 else None
 
 logger = logging.getLogger(__name__)
 router = Router(name="messages")
@@ -33,21 +59,41 @@ async def _get_or_init_user(message: Message):
     )
 
 
+async def _process_enum(message: Message, items: list[str], state: FSMContext) -> None:
+    await state.update_data(pending_enum=items)
+    await state.set_state(DialogState.active)
+    text_lines = "\n".join(f"  {i + 1}. {item}" for i, item in enumerate(items))
+    header = "<i>Выбери путь:</i>"
+    await message.answer(
+        f"{header}\n{text_lines}",
+        parse_mode="HTML",
+        reply_markup=enumeration_keyboard(items),
+    )
+
+
 async def _process_text(message: Message, text: str, state: FSMContext) -> None:
+    items = _detect_enumeration(text)
+    if items:
+        await _process_enum(message, items, state)
+        return
+
     thinking = None
     try:
         user = await _get_or_init_user(message)
-        thinking = await message.answer("⏳")
+        try:
+            await message.bot.send_chat_action(chat_id=message.chat.id, action="typing")
+        except Exception:
+            pass
 
         text_response, ai_result, node_id = await handle_user_message(
             user=user,
             user_message=text,
         )
 
-        kb = dialog_keyboard(ai_result, node_id, show_back=True)
+        if not ai_result.skill_responses:
+            return
 
-        await thinking.delete()
-        thinking = None
+        kb = dialog_keyboard(ai_result, node_id, show_back=True)
         sent = await message.answer(text_response, parse_mode="HTML", reply_markup=kb)
         await update_node_message_id(node_id, sent.message_id)
         await state.set_state(DialogState.active)
@@ -91,6 +137,23 @@ async def handle_text_any(message: Message, state: FSMContext) -> None:
     await _process_text(message, text, state)
 
 
+# ─── Business account messages ───────────────────────────────────────────────
+
+@router.business_message(F.text)
+async def handle_business_text(message: Message, state: FSMContext) -> None:
+    uid = message.from_user.id if message.from_user else 0
+    text = (message.text or "").strip()
+    logger.info(
+        "business_message user_id=%s conn=%s len=%d text=%r",
+        uid, message.business_connection_id, len(text), text[:120],
+    )
+    if not text or text.startswith("/"):
+        return
+    if not _is_allowed(uid):
+        return
+    await _process_text(message, text, state)
+
+
 # ─── Voice message ────────────────────────────────────────────────────────────
 
 @router.message(F.voice)
@@ -111,7 +174,10 @@ async def handle_voice(message: Message, state: FSMContext) -> None:
     audio_bytes = file_bytes.read() if hasattr(file_bytes, "read") else bytes(file_bytes)
 
     transcribed = await transcribe_voice(audio_bytes, "voice.ogg")
-    await thinking.delete()
+    try:
+        await thinking.delete()
+    except Exception:
+        pass
 
     if not transcribed:
         await message.answer("Не удалось распознать голосовое.")
@@ -141,7 +207,10 @@ async def handle_video_note(message: Message, state: FSMContext) -> None:
     audio_bytes = file_bytes.read() if hasattr(file_bytes, "read") else bytes(file_bytes)
 
     transcribed = await transcribe_voice(audio_bytes, "video_note.mp4")
-    await thinking.delete()
+    try:
+        await thinking.delete()
+    except Exception:
+        pass
 
     if not transcribed:
         await message.answer("Не удалось распознать кружочек.")

@@ -91,7 +91,7 @@ async def format_skill_block(
     if not skill:
         return ""
 
-    header = f"{skill.emoji} <b><i>{skill.name}</i></b>"
+    header = f"{skill.emoji} <i>{skill.name}</i>"
     body = sr.text
 
     if not sr.has_check:
@@ -99,6 +99,11 @@ async def format_skill_block(
 
     level = await get_skill_level(user, sr.skill_name)
     roll = roll_check(level, sr.check_difficulty)
+    logger.info(
+        "[dialog] dice roll %s: d1=%d d2=%d level=%d total=%d vs %d → %s",
+        sr.skill_name, roll.die1, roll.die2, level, roll.total, sr.check_difficulty,
+        "SUCCESS" if roll.is_success else "FAIL",
+    )
 
     check_line = ""
     if sr.check_description:
@@ -121,11 +126,15 @@ async def build_response_message(
 ) -> str:
     blocks = []
     for sr in ai_result.skill_responses:
+        logger.info("[dialog] formatting skill: %s has_check=%s", sr.skill_name, sr.has_check)
         block = await format_skill_block(user, sr)
         if block:
             blocks.append(block)
 
-    return "\n\n──────────\n\n".join(blocks) if blocks else "..."
+    if not blocks:
+        logger.warning("[dialog] no skill blocks produced — skill_responses=%d", len(ai_result.skill_responses))
+
+    return "\n\n".join(blocks)
 
 
 # ─── Dialog orchestration ─────────────────────────────────────────────────────
@@ -151,9 +160,15 @@ async def handle_user_message(
     if not dialog:
         dialog = await Dialog.create(user=user, title=user_message[:100])
 
+    logger.info("[dialog] generating response for user_id=%s msg=%r", user.telegram_id, user_message[:80])
     ai_result = await generate_skill_responses(
         user_message=user_message,
         context_messages=context_messages,
+    )
+    logger.info(
+        "[dialog] ai_result: skills=%s options=%s",
+        [sr.skill_name for sr in ai_result.skill_responses],
+        ai_result.response_options,
     )
 
     node = await DialogNode.create(
@@ -181,7 +196,7 @@ async def handle_user_message(
 
     node_cache = {
         "user_message": user_message,
-        "options": ai_result.response_options,
+        "options": [sr.dialog_option for sr in ai_result.skill_responses],
         "skill_names": [sr.skill_name for sr in ai_result.skill_responses],
         "parent_node_id": parent_node_id,
     }
@@ -222,7 +237,7 @@ async def handle_scene_command(
     await _save_state(redis, user.telegram_id, new_state)
     await _save_node_cache(redis, node.id, {
         "user_message": description,
-        "options": ai_result.response_options,
+        "options": [sr.dialog_option for sr in ai_result.skill_responses],
         "skill_names": [sr.skill_name for sr in ai_result.skill_responses],
         "parent_node_id": None,
     })

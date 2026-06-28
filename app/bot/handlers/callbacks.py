@@ -10,6 +10,7 @@ from app.bot.keyboards.inline import (
     dialog_keyboard,
     empty_keyboard,
     skills_keyboard,
+    enumeration_keyboard,
 )
 from app.bot.states import DialogState
 from app.core.config import settings
@@ -38,6 +39,64 @@ async def _edit_or_send(cq: CallbackQuery, text: str, reply_markup=None) -> None
         await cq.message.edit_text(text, parse_mode="HTML", reply_markup=reply_markup)
     except TelegramBadRequest:
         await cq.message.answer(text, parse_mode="HTML", reply_markup=reply_markup)
+
+
+# ─── enum:{index} ────────────────────────────────────────────────────────────
+
+@router.callback_query(F.data.startswith("enum:"))
+async def cb_enum(cq: CallbackQuery, state: FSMContext) -> None:
+    if not _is_allowed(cq.from_user.id):
+        await cq.answer()
+        return
+
+    try:
+        index = int(cq.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await cq.answer("Ошибка")
+        return
+
+    data = await state.get_data()
+    items: list[str] = data.get("pending_enum", [])
+
+    if index >= len(items):
+        await cq.answer("Вариант недоступен")
+        return
+
+    chosen = items[index]
+
+    try:
+        await cq.message.edit_reply_markup(reply_markup=empty_keyboard())
+    except Exception:
+        pass
+
+    await cq.answer()
+    await cq.message.answer(f"<i>— {chosen}</i>", parse_mode="HTML")
+
+    user = await get_or_create_user(
+        telegram_id=cq.from_user.id,
+        chat_id=cq.message.chat.id,
+        username=cq.from_user.username,
+        first_name=cq.from_user.first_name or "",
+    )
+
+    try:
+        await cq.message.bot.send_chat_action(chat_id=cq.message.chat.id, action="typing")
+    except Exception:
+        pass
+    thinking = await cq.message.answer("⏳")
+    text, ai_result, new_node_id = await handle_user_message(
+        user=user,
+        user_message=chosen,
+    )
+
+    kb = dialog_keyboard(ai_result, new_node_id, show_back=True)
+    try:
+        await thinking.delete()
+    except Exception:
+        pass
+    sent = await cq.message.answer(text, parse_mode="HTML", reply_markup=kb)
+    await update_node_message_id(new_node_id, sent.message_id)
+    await state.set_state(DialogState.active)
 
 
 # ─── choice:{node_id}:{index} ─────────────────────────────────────────────────
@@ -81,6 +140,10 @@ async def cb_choice(cq: CallbackQuery, state: FSMContext) -> None:
 
     await cq.message.answer(f"<i>— {chosen_text}</i>", parse_mode="HTML")
 
+    try:
+        await cq.message.bot.send_chat_action(chat_id=cq.message.chat.id, action="typing")
+    except Exception:
+        pass
     thinking = await cq.message.answer("⏳")
     text, ai_result, new_node_id = await handle_user_message(
         user=user,
@@ -88,7 +151,10 @@ async def cb_choice(cq: CallbackQuery, state: FSMContext) -> None:
     )
 
     kb = dialog_keyboard(ai_result, new_node_id, show_back=True)
-    await thinking.delete()
+    try:
+        await thinking.delete()
+    except Exception:
+        pass
     sent = await cq.message.answer(text, parse_mode="HTML", reply_markup=kb)
     await update_node_message_id(new_node_id, sent.message_id)
     await state.set_state(DialogState.active)

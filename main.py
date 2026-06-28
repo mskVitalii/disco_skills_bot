@@ -132,7 +132,11 @@ async def _background_init() -> None:
         webhook_url = f"{settings.WEBHOOK_URL.rstrip('/')}/webhook"
         logger.info("[4/4] Setting webhook: %s", webhook_url)
         try:
-            await bot.set_webhook(webhook_url, drop_pending_updates=True)
+            await bot.set_webhook(
+                webhook_url,
+                drop_pending_updates=True,
+                allowed_updates=dp.resolve_used_update_types(),
+            )
             logger.info("[4/4] Webhook set")
         except Exception as exc:
             logger.error(
@@ -153,12 +157,24 @@ async def _background_init() -> None:
     )
 
 
+async def _shutdown_step(coro, label: str, timeout: float = 5.0) -> None:
+    try:
+        await asyncio.wait_for(coro, timeout=timeout)
+    except asyncio.TimeoutError:
+        logger.warning("Shutdown: '%s' timed out after %.0fs", label, timeout)
+    except asyncio.CancelledError:
+        pass  # CancelledError is BaseException, not Exception — must catch explicitly
+    except Exception as exc:
+        logger.warning("Shutdown: '%s' failed: %s", label, exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _init_task
-    # Background init so health endpoint responds immediately
     _init_task = asyncio.create_task(_background_init())
     yield
+
+    logger.info("Shutting down...")
 
     if _init_task and not _init_task.done():
         _init_task.cancel()
@@ -168,29 +184,31 @@ async def lifespan(app: FastAPI):
             pass
 
     if _polling_task:
-        _polling_task.cancel()
+        if not _polling_task.done():
+            _polling_task.cancel()
         try:
-            await _polling_task
-        except asyncio.CancelledError:
+            await asyncio.wait_for(asyncio.shield(_polling_task), timeout=5.0)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
             pass
 
     if settings.WEBHOOK_URL and _ready:
-        try:
-            await bot.delete_webhook()
-        except Exception:
-            pass
+        await _shutdown_step(bot.delete_webhook(), "delete webhook")
 
-    for coro in (bot.session.close(), storage.close(), close_db(), close_redis()):
-        try:
-            await coro
-        except Exception:
-            pass
+    await _shutdown_step(bot.session.close(), "bot session")
+    await _shutdown_step(storage.close(), "fsm storage")
+    await _shutdown_step(close_db(), "database")
+    await _shutdown_step(close_redis(), "redis")
 
     logger.info("Shutdown complete")
 
 
 async def _run_polling() -> None:
-    await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+    # handle_signals=False: let uvicorn own SIGTERM/SIGINT so shutdown is coordinated
+    await dp.start_polling(
+        bot,
+        allowed_updates=dp.resolve_used_update_types(),
+        handle_signals=False,
+    )
 
 
 # ─── FastAPI app ──────────────────────────────────────────────────────────────
