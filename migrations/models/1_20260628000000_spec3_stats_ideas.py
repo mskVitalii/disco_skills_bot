@@ -1,8 +1,8 @@
 from tortoise import BaseDBAsyncClient
 
 
-async def upgrade(db: BaseDBAsyncClient) -> None:
-    await db.execute_script("""
+async def upgrade(db: BaseDBAsyncClient) -> str:
+    return """
         CREATE TABLE IF NOT EXISTS "skill_invocation_stats" (
             "id" SERIAL NOT NULL PRIMARY KEY,
             "skill_name" VARCHAR(100) NOT NULL,
@@ -17,11 +17,11 @@ async def upgrade(db: BaseDBAsyncClient) -> None:
             "created_at" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
             "user_id" INT NOT NULL REFERENCES "users" ("id") ON DELETE CASCADE
         );
-    """)
+    """
 
 
-async def downgrade(db: BaseDBAsyncClient) -> None:
-    await db.execute_script("""
+async def downgrade(db: BaseDBAsyncClient) -> str:
+    return """
         DROP TABLE IF EXISTS "user_major_ideas";
         DROP TABLE IF EXISTS "skill_invocation_stats";
-    """)
+    """
