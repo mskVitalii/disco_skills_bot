@@ -52,6 +52,9 @@ class Settings(BaseSettings):
     # App
     DEBUG: bool = False
     MAX_SKILL_RESPONSES: int = 4
+    ADMIN_TOKEN: Optional[str] = None
+    # Probability [0..1] that the bot chimes in on a business message (not every message)
+    ACTIVATION_CHANCE: float = 0.40
 
     @field_validator("DATABASE_URL", mode="before")
     @classmethod

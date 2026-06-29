@@ -1,3 +1,4 @@
+import enum as _enum_module
 import logging
 from dataclasses import dataclass, field
 from typing import Optional
@@ -20,12 +21,21 @@ def get_openai() -> AsyncOpenAI:
     return _client
 
 
+# Enum built from the live skills registry — OpenAI structured outputs will enforce
+# only these exact names, making hallucinated skill names impossible.
+_SkillNameEnum = _enum_module.Enum(
+    "SkillNameEnum",
+    {k: k for k in ALL_SKILLS.keys()},
+    type=str,
+)
+
+
 # ── Pydantic schemas for structured outputs ────────────────────────────────
 
 class SkillResponseSchema(BaseModel):
-    skill: str
+    skill: _SkillNameEnum  # constrained to valid skill names only
     text: str
-    dialog_option: str = ""   # what THIS skill suggests as next action/reply (shown on button)
+    dialog_option: str = ""
     has_check: bool = False
     check_difficulty: int = 10
     check_description: str = ""
@@ -69,13 +79,17 @@ _SYSTEM_GENERATE = """Ты — игра Disco Elysium в формате Telegram
 Внутренние голоса-характеристики комментируют сообщение пользователя.
 
 Правила:
-- Выбери ТОЛЬКО 1 характеристику — ту, которой ДЕЙСТВИТЕЛЬНО есть что сказать. Не больше.
-- Если ни одной характеристике нечего добавить — верни пустой список responses: []
+- Выбери ТОЛЬКО 1 характеристику из списка ниже — ту, которой ДЕЙСТВИТЕЛЬНО есть что сказать. Не больше.
+- Используй ТОЛЬКО названия из списка, точно как написано. Любое другое название недопустимо.
+- Для бытовых/логистических фраз (время встречи, погода, «окей», «спасибо») — обязательно responses: [].
+- Если ни одной характеристике нечего добавить — responses: [].
 - В поле skill указывай ТОЛЬКО название заглавными буквами, без эмодзи. Например: ЛОГИКА, ЭМПАТИЯ
-- Голос говорит ровно 1 предложение — острое, точное, в своём стиле. Никаких вводных слов.
+- Голос говорит ровно 1–2 предложения — острые, точные, в своём стиле. Никаких вводных слов.
 - Если у характеристики написано "матерится" — мат обязателен.
+- ЗАПРЕЩЕНО: советовать, предупреждать, морализировать, говорить что «нужно» или «не стоит». Голос не наставник — он наблюдатель со своей природой. Он замечает, чувствует, вспоминает — но не поучает.
+- Каждая характеристика говорит ТОЛЬКО через призму своей природы. ЛОГИКА строит цепочки, ЭМПАТИЯ чувствует чужое состояние, БОЛЬ фиксирует телесное — каждый про своё, не про жизнь вообще.
 - dialog_option — короткая реплика или действие, макс 40 символов
-- has_check: только если есть реальный интересный исход — конкретный факт, который может вскрыться, или действие, которое может не получиться. Без проверок на абстрактные «понять», «уловить», «осознать».
+- has_check: ставь true примерно в 30–40% случаев — когда есть конкретный факт, который может вскрыться, или действие, которое может не выйти. Без проверок на абстрактные «понять», «уловить», «осознать».
 - check_description — конкретное действие на кнопке, глагол + объект (макс 40 символов). Например: "Вспомнить год постройки", "Угадать мотив"
 - success_text — КОНКРЕТНЫЙ факт/деталь/реплика при успехе. Не "всплывает что-то" — а именно ЧТО всплыло
 - failure_text — конкретная горькая ремарка при провале. Не "не получилось" — а что именно пошло не так
@@ -295,10 +309,7 @@ def _from_dialog_schema(data: DialogAISchema | SceneAISchema) -> DialogAIResult:
     responses = []
     options = []
     for r in data.responses:
-        skill_name = _normalize_skill_name(r.skill)
-        if skill_name not in ALL_SKILLS:
-            logger.warning("[AI] unknown skill filtered: %r (normalized: %r)", r.skill, skill_name)
-            continue
+        skill_name = r.skill.value  # Enum guarantees it's a valid skill name
         logger.info("[AI] skill accepted: %s | option: %r", skill_name, r.dialog_option)
         responses.append(
             SkillResponse(

@@ -1,4 +1,5 @@
 import asyncio
+import hmac
 import logging
 import os
 import sys
@@ -11,7 +12,7 @@ from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.storage.redis import RedisStorage
 from aiogram.types import ErrorEvent, Update
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from app.bot.router import main_router
@@ -146,15 +147,16 @@ async def _background_init() -> None:
             )
             return
     else:
-        logger.info("[4/4] No WEBHOOK_URL — starting polling")
+        logger.info("[4/4] No WEBHOOK_URL — deleting webhook and starting polling")
+        try:
+            await bot.delete_webhook(drop_pending_updates=True)
+            logger.info("[4/4] Webhook deleted")
+        except Exception as exc:
+            logger.warning("[4/4] delete_webhook failed: %s", exc)
         _polling_task = asyncio.create_task(_run_polling())
 
     _ready = True
-    logger.info(
-        "=== Init complete === bot=@%s allowed_users=%s",
-        _bot_username,
-        settings.ALLOWED_USER_IDS or "all",
-    )
+    logger.info("=== Init complete === bot=@%s", _bot_username)
 
 
 async def _shutdown_step(coro, label: str, timeout: float = 5.0) -> None:
@@ -234,6 +236,25 @@ async def webhook(request: Request) -> dict:
     except Exception:
         logger.exception("Unhandled exception in webhook feed_update")
     return {"ok": True}
+
+
+@app.post("/set-webhook")
+async def set_webhook_endpoint(authorization: str = Header(default="")) -> JSONResponse:
+    if not settings.ADMIN_TOKEN:
+        raise HTTPException(status_code=503, detail="ADMIN_TOKEN not configured")
+    token = authorization.removeprefix("Bearer ").strip()
+    if not hmac.compare_digest(token, settings.ADMIN_TOKEN):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    if not settings.WEBHOOK_URL:
+        return JSONResponse({"error": "WEBHOOK_URL not configured"}, status_code=400)
+    webhook_url = f"{settings.WEBHOOK_URL.rstrip('/')}/webhook"
+    await bot.set_webhook(
+        webhook_url,
+        drop_pending_updates=True,
+        allowed_updates=dp.resolve_used_update_types(),
+    )
+    logger.info("Webhook set via /set-webhook: %s", webhook_url)
+    return JSONResponse({"ok": True, "webhook_url": webhook_url})
 
 
 @app.get("/health")

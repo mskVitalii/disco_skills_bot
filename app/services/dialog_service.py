@@ -97,6 +97,14 @@ async def format_skill_block(
 
     header = f"{skill.emoji} <i>{skill.name}</i>"
     body = sr.text
+    if sr.has_check:
+        check_result = await perform_skill_check(user, sr.skill_name, {
+            "check_difficulty": sr.check_difficulty,
+            "success_text": sr.success_text,
+            "failure_text": sr.failure_text,
+        })
+        if check_result:
+            body = f"{body}\n\n{check_result}"
     return f"{header}\n{body}"
 
 
@@ -215,7 +223,7 @@ async def semantic_search(
             f"""SELECT dn.user_message,
                        1 - (dn.embedding <=> $1::vector) AS similarity
                 FROM dialog_nodes dn
-                JOIN dialogs d ON dn.dialog = d.id
+                JOIN dialogs d ON dn.dialog_id = d.id
                 JOIN users u ON d.user_id = u.id
                 WHERE u.telegram_id = $2
                   AND dn.embedding IS NOT NULL

@@ -144,6 +144,10 @@ async def cmd_disco(message: Message, state: FSMContext) -> None:
 
     text, ai_result, node_id = await handle_user_message(user=user, user_message=prompt)
 
+    if not ai_result.skill_responses:
+        await thinking.delete()
+        return
+
     kb = dialog_keyboard(ai_result, node_id, show_back=bool(last_message))
     await thinking.delete()
     sent = await message.answer(text, parse_mode="HTML", reply_markup=kb)

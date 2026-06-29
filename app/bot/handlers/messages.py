@@ -1,4 +1,5 @@
 import logging
+import random
 import re
 
 from aiogram import F, Router
@@ -170,6 +171,11 @@ async def handle_business_disco(message: Message, state: FSMContext) -> None:
 
     thinking = await message.answer("🎭 Голоса пробуждаются...")
     text, ai_result, node_id = await handle_user_message(user=user, user_message=prompt)
+
+    if not ai_result.skill_responses:
+        await thinking.delete()
+        return
+
     kb = dialog_keyboard(ai_result, node_id, show_back=bool(last_message))
     await thinking.delete()
     sent = await message.answer(text, parse_mode="HTML", reply_markup=kb)
@@ -189,6 +195,10 @@ async def handle_business_text(message: Message, state: FSMContext) -> None:
         return
     # Skip owner's own messages — bot only responds to /disco for the owner
     if _is_owner(uid):
+        return
+    # Голоса встревают не в каждое сообщение — только иногда
+    if random.random() > settings.ACTIVATION_CHANCE:
+        logger.debug("business_message skipped by activation chance user_id=%s", uid)
         return
     await _process_text(message, text, state)
 
