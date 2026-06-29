@@ -15,24 +15,16 @@ def dialog_keyboard(
     ai_result: DialogAIResult,
     node_id: int,
     show_back: bool = False,
-) -> InlineKeyboardMarkup:
+) -> InlineKeyboardMarkup | None:
     rows: list[list[InlineKeyboardButton]] = []
 
     for i, sr in enumerate(ai_result.skill_responses):
-        skill = ALL_SKILLS.get(sr.skill_name)
-        emoji = skill.emoji if skill else ""
-
-        if sr.dialog_option:
-            cb = f"choice:{node_id}:{i}"
-            label = f"{emoji} {_truncate(sr.dialog_option, 36)}"
-            rows.append([InlineKeyboardButton(text=label, callback_data=cb)])
-
         if sr.has_check and sr.check_description:
             cb = f"roll:{node_id}:{i}"
             label = f"🎲 {_truncate(sr.check_description, 36)}"
             rows.append([InlineKeyboardButton(text=label, callback_data=cb)])
 
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+    return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 
 
 def back_keyboard() -> InlineKeyboardMarkup:

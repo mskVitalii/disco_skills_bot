@@ -205,6 +205,13 @@ async def lifespan(app: FastAPI):
 
 
 async def _run_polling() -> None:
+    # Drop any updates that accumulated while the bot was offline
+    try:
+        await bot.delete_webhook(drop_pending_updates=True)
+        logger.info("[polling] dropped pending updates")
+    except Exception as exc:
+        logger.warning("[polling] could not drop pending updates: %s", exc)
+
     # handle_signals=False: let uvicorn own SIGTERM/SIGINT so shutdown is coordinated
     await dp.start_polling(
         bot,

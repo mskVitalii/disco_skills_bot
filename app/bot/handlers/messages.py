@@ -118,7 +118,7 @@ async def _process_text(message: Message, text: str, state: FSMContext) -> None:
                 await thinking.delete()
             except Exception:
                 pass
-        await message.answer("Голоса замолчали. Попробуй снова — или /new чтобы начать заново.")
+        await message.answer("Характеристики молчат. Попробуй снова — или /new чтобы начать заново.")
 
 
 # ─── Text message ─────────────────────────────────────────────────────────────
@@ -165,11 +165,11 @@ async def handle_business_disco(message: Message, state: FSMContext) -> None:
 
     last_message = await get_current_context_message(user)
     if last_message:
-        prompt = f"Голоса пробуждаются снова. Мысли возвращаются к: «{last_message[:120]}»"
+        prompt = f"Характеристики пробуждаются снова. Мысли возвращаются к: «{last_message[:120]}»"
     else:
-        prompt = "Детектив молчит. Тишина. Голоса внутри начинают говорить сами по себе."
+        prompt = "Детектив молчит. Тишина. Характеристики начинают говорить сами по себе."
 
-    thinking = await message.answer("🎭 Голоса пробуждаются...")
+    thinking = await message.answer("🎭 Характеристики пробуждаются...")
     text, ai_result, node_id = await handle_user_message(user=user, user_message=prompt)
 
     if not ai_result.skill_responses:
@@ -196,7 +196,7 @@ async def handle_business_text(message: Message, state: FSMContext) -> None:
     # Skip owner's own messages — bot only responds to /disco for the owner
     if _is_owner(uid):
         return
-    # Голоса встревают не в каждое сообщение — только иногда
+    # Характеристики встревают не в каждое сообщение — только иногда
     if random.random() > settings.ACTIVATION_CHANCE:
         logger.debug("business_message skipped by activation chance user_id=%s", uid)
         return

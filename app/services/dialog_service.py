@@ -28,20 +28,20 @@ DIALOG_STATE_TTL = 60 * 60 * 24  # 24 hours
 
 # ─── Redis helpers ────────────────────────────────────────────────────────────
 
-def _state_key(user_id: int) -> str:
-    return f"dialog_state:{user_id}"
+def _state_key(user_id: int, chat_id: int) -> str:
+    return f"dialog_state:{user_id}:{chat_id}"
 
 
 def _node_key(node_id: int) -> str:
     return f"dialog_node:{node_id}"
 
 
-async def _save_state(redis: aioredis.Redis, user_id: int, state: dict) -> None:
-    await redis.setex(_state_key(user_id), DIALOG_STATE_TTL, json.dumps(state))
+async def _save_state(redis: aioredis.Redis, user_id: int, chat_id: int, state: dict) -> None:
+    await redis.setex(_state_key(user_id, chat_id), DIALOG_STATE_TTL, json.dumps(state))
 
 
-async def _load_state(redis: aioredis.Redis, user_id: int) -> dict | None:
-    raw = await redis.get(_state_key(user_id))
+async def _load_state(redis: aioredis.Redis, user_id: int, chat_id: int) -> dict | None:
+    raw = await redis.get(_state_key(user_id, chat_id))
     return json.loads(raw) if raw else None
 
 
@@ -96,16 +96,7 @@ async def format_skill_block(
         return ""
 
     header = f"{skill.emoji} <i>{skill.name}</i>"
-    body = sr.text
-    if sr.has_check:
-        check_result = await perform_skill_check(user, sr.skill_name, {
-            "check_difficulty": sr.check_difficulty,
-            "success_text": sr.success_text,
-            "failure_text": sr.failure_text,
-        })
-        if check_result:
-            body = f"{body}\n\n{check_result}"
-    return f"{header}\n{body}"
+    return f"{header}\n{sr.text}"
 
 
 async def perform_skill_check(user: User, skill_name: str, check: dict) -> str:
@@ -205,17 +196,18 @@ async def _store_embedding(node_id: int, embedding: list[float]) -> None:
 
 async def semantic_search(
     user_telegram_id: int,
+    chat_id: int,
     query_embedding: list[float],
     exclude_dialog_id: str | None = None,
     limit: int = 3,
 ) -> list[str]:
-    """Find user messages from past dialogs that are semantically similar to the query."""
+    """Find user messages from past dialogs in the same chat that are semantically similar."""
     vec_str = "[" + ",".join(str(v) for v in query_embedding) + "]"
     try:
         from tortoise import connections
         conn = connections.get("default")
-        exclude_clause = "AND d.id != $4::uuid" if exclude_dialog_id else ""
-        params: list = [vec_str, user_telegram_id, limit]
+        exclude_clause = "AND d.id != $5::uuid" if exclude_dialog_id else ""
+        params: list = [vec_str, user_telegram_id, chat_id, limit]
         if exclude_dialog_id:
             params.append(exclude_dialog_id)
 
@@ -226,10 +218,11 @@ async def semantic_search(
                 JOIN dialogs d ON dn.dialog_id = d.id
                 JOIN users u ON d.user_id = u.id
                 WHERE u.telegram_id = $2
+                  AND d.chat_id = $3
                   AND dn.embedding IS NOT NULL
                   {exclude_clause}
                 ORDER BY dn.embedding <=> $1::vector
-                LIMIT $3""",
+                LIMIT $4""",
             params,
         )
         # rows is a list of asyncpg Record objects
@@ -282,7 +275,7 @@ async def handle_user_message(
 ) -> tuple[str, DialogAIResult, int]:
     """Process a user message, return (formatted_text, ai_result, node_id)."""
     redis = get_redis()
-    state = await _load_state(redis, user.telegram_id)
+    state = await _load_state(redis, user.telegram_id, user.chat_id)
 
     dialog_id = state.get("dialog_id") if state else None
     parent_node_id = state.get("current_node_id") if state else None
@@ -294,7 +287,7 @@ async def handle_user_message(
         dialog = None
 
     if not dialog:
-        dialog = await Dialog.create(user=user, title=user_message[:100])
+        dialog = await Dialog.create(user=user, title=user_message[:100], chat_id=user.chat_id)
         dialog_id = str(dialog.id)
 
     # Load recent dialog messages and semantic search in parallel
@@ -314,11 +307,12 @@ async def handle_user_message(
     user_ideas = results[1] if isinstance(results[1], list) else []
     query_embedding = results[2] if isinstance(results[2], list) else None
 
-    # Semantic search in past dialogs (outside current dialog)
+    # Semantic search in past dialogs of the same chat (outside current dialog)
     semantic_msgs: list[str] = []
     if query_embedding:
         semantic_msgs = await semantic_search(
             user_telegram_id=user.telegram_id,
+            chat_id=user.chat_id,
             query_embedding=query_embedding,
             exclude_dialog_id=dialog_id,
         )
@@ -331,37 +325,34 @@ async def handle_user_message(
         semantic_context=semantic_msgs,
     )
     logger.info(
-        "[dialog] ai_result: skills=%s options=%s",
+        "[dialog] ai_result: skills=%s",
         [sr.skill_name for sr in ai_result.skill_responses],
-        ai_result.response_options,
     )
 
     node = await DialogNode.create(
         dialog=dialog,
         user_message=user_message,
         skill_responses=[asdict(sr) for sr in ai_result.skill_responses],
-        response_options=ai_result.response_options,
+        response_options=[],
         parent_id=parent_node_id,
     )
 
-    # Build the response text (with dice rolls baked in)
     text = await build_response_message(user, ai_result)
 
     history = (state or {}).get("history", [])
     if parent_node_id:
         history.append({"node_id": parent_node_id})
-    history = history[-10:]  # keep last 10 nodes
+    history = history[-10:]
 
     new_state = {
         "dialog_id": str(dialog.id),
         "current_node_id": node.id,
         "history": history,
     }
-    await _save_state(redis, user.telegram_id, new_state)
+    await _save_state(redis, user.telegram_id, user.chat_id, new_state)
 
     node_cache = {
         "user_message": user_message,
-        "options": [sr.dialog_option for sr in ai_result.skill_responses],
         "skill_names": [sr.skill_name for sr in ai_result.skill_responses],
         "parent_node_id": parent_node_id,
         "checks": [
@@ -406,18 +397,18 @@ async def handle_scene_command(
     redis = get_redis()
 
     # End any existing active dialog
-    existing_state = await _load_state(redis, user.telegram_id)
+    existing_state = await _load_state(redis, user.telegram_id, user.chat_id)
     if existing_state and existing_state.get("dialog_id"):
         await Dialog.filter(id=existing_state["dialog_id"]).update(is_active=False)
 
     ai_result = await generate_scene(description)
 
-    dialog = await Dialog.create(user=user, title=description[:100])
+    dialog = await Dialog.create(user=user, title=description[:100], chat_id=user.chat_id)
     node = await DialogNode.create(
         dialog=dialog,
         user_message=description,
         skill_responses=[asdict(sr) for sr in ai_result.skill_responses],
-        response_options=ai_result.response_options,
+        response_options=[],
     )
 
     text = await build_response_message(user, ai_result)
@@ -427,12 +418,21 @@ async def handle_scene_command(
         "current_node_id": node.id,
         "history": [],
     }
-    await _save_state(redis, user.telegram_id, new_state)
+    await _save_state(redis, user.telegram_id, user.chat_id, new_state)
     await _save_node_cache(redis, node.id, {
         "user_message": description,
-        "options": [sr.dialog_option for sr in ai_result.skill_responses],
         "skill_names": [sr.skill_name for sr in ai_result.skill_responses],
         "parent_node_id": None,
+        "checks": [
+            {
+                "has_check": sr.has_check,
+                "check_difficulty": sr.check_difficulty,
+                "check_description": sr.check_description,
+                "success_text": sr.success_text,
+                "failure_text": sr.failure_text,
+            }
+            for sr in ai_result.skill_responses
+        ],
     })
 
     return text, ai_result, node.id
@@ -443,7 +443,7 @@ async def handle_skill_deep_dive(
     skill_name: str,
 ) -> str:
     redis = get_redis()
-    state = await _load_state(redis, user.telegram_id)
+    state = await _load_state(redis, user.telegram_id, user.chat_id)
     node_id = state.get("current_node_id") if state else None
 
     user_message = ""
@@ -461,7 +461,7 @@ async def handle_skill_deep_dive(
 async def handle_go_back(user: User) -> dict | None:
     """Go back to previous node. Returns node cache dict or None."""
     redis = get_redis()
-    state = await _load_state(redis, user.telegram_id)
+    state = await _load_state(redis, user.telegram_id, user.chat_id)
     if not state:
         return None
 
@@ -474,7 +474,7 @@ async def handle_go_back(user: User) -> dict | None:
 
     state["current_node_id"] = prev_node_id
     state["history"] = history
-    await _save_state(redis, user.telegram_id, state)
+    await _save_state(redis, user.telegram_id, user.chat_id, state)
 
     return await _load_node_cache(redis, prev_node_id)
 
@@ -482,7 +482,7 @@ async def handle_go_back(user: User) -> dict | None:
 async def get_current_context_message(user: User) -> str:
     """Return the last user message from current dialog node, or empty string."""
     redis = get_redis()
-    state = await _load_state(redis, user.telegram_id)
+    state = await _load_state(redis, user.telegram_id, user.chat_id)
     if not state:
         return ""
     node_id = state.get("current_node_id")
@@ -494,10 +494,10 @@ async def get_current_context_message(user: User) -> str:
 
 async def reset_dialog(user: User) -> None:
     redis = get_redis()
-    state = await _load_state(redis, user.telegram_id)
+    state = await _load_state(redis, user.telegram_id, user.chat_id)
     if state and state.get("dialog_id"):
         await Dialog.filter(id=state["dialog_id"]).update(is_active=False)
-    await redis.delete(_state_key(user.telegram_id))
+    await redis.delete(_state_key(user.telegram_id, user.chat_id))
 
 
 async def update_node_message_id(node_id: int, message_id: int) -> None:

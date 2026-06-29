@@ -35,7 +35,6 @@ _SkillNameEnum = _enum_module.Enum(
 class SkillResponseSchema(BaseModel):
     skill: _SkillNameEnum  # constrained to valid skill names only
     text: str
-    dialog_option: str = ""
     has_check: bool = False
     check_difficulty: int = 10
     check_description: str = ""
@@ -59,7 +58,6 @@ class SceneAISchema(BaseModel):
 class SkillResponse:
     skill_name: str
     text: str
-    dialog_option: str = ""
     has_check: bool = False
     check_difficulty: int = 10
     check_description: str = ""
@@ -70,13 +68,12 @@ class SkillResponse:
 @dataclass
 class DialogAIResult:
     skill_responses: list[SkillResponse] = field(default_factory=list)
-    response_options: list[str] = field(default_factory=list)
 
 
 # ── System prompts ─────────────────────────────────────────────────────────
 
 _SYSTEM_GENERATE = """Ты — игра Disco Elysium в формате Telegram-бота.
-Внутренние голоса-характеристики комментируют сообщение пользователя.
+Характеристики детектива комментируют сообщение пользователя.
 
 Правила:
 - Выбери ТОЛЬКО 1 характеристику из списка ниже — ту, которой ДЕЙСТВИТЕЛЬНО есть что сказать. Не больше.
@@ -84,22 +81,22 @@ _SYSTEM_GENERATE = """Ты — игра Disco Elysium в формате Telegram
 - Для бытовых/логистических фраз (время встречи, погода, «окей», «спасибо») — обязательно responses: [].
 - Если ни одной характеристике нечего добавить — responses: [].
 - В поле skill указывай ТОЛЬКО название заглавными буквами, без эмодзи. Например: ЛОГИКА, ЭМПАТИЯ
-- Голос говорит ровно 1–2 предложения — острые, точные, в своём стиле. Никаких вводных слов.
+- Характеристика говорит ровно 1–2 предложения — острые, точные, в своём стиле. Никаких вводных слов.
 - Если у характеристики написано "матерится" — мат обязателен.
-- ЗАПРЕЩЕНО: советовать, предупреждать, морализировать, говорить что «нужно» или «не стоит». Голос не наставник — он наблюдатель со своей природой. Он замечает, чувствует, вспоминает — но не поучает.
-- Каждая характеристика говорит ТОЛЬКО через призму своей природы. ЛОГИКА строит цепочки, ЭМПАТИЯ чувствует чужое состояние, БОЛЬ фиксирует телесное — каждый про своё, не про жизнь вообще.
-- dialog_option — короткая реплика или действие, макс 40 символов
+- ЗАПРЕЩЕНО: советовать, предупреждать, морализировать, говорить что «нужно» или «не стоит». Характеристика — не наставник, а наблюдатель со своей природой. Она замечает, чувствует, вспоминает — но не поучает.
+- Каждая характеристика говорит ТОЛЬКО через призму своей природы. ЛОГИКА строит цепочки, ЭМПАТИЯ чувствует чужое состояние, БОЛЬ фиксирует телесное — каждая про своё, не про жизнь вообще.
 - has_check: ставь true примерно в 30–40% случаев — когда есть конкретный факт, который может вскрыться, или действие, которое может не выйти. Без проверок на абстрактные «понять», «уловить», «осознать».
-- check_description — конкретное действие на кнопке, глагол + объект (макс 40 символов). Например: "Вспомнить год постройки", "Угадать мотив"
+- check_description — надпись на кнопке броска кубиков: глагол + объект, макс 35 символов. Например: "Вспомнить год постройки", "Угадать мотив"
 - success_text — КОНКРЕТНЫЙ факт/деталь/реплика при успехе. Не "всплывает что-то" — а именно ЧТО всплыло
 - failure_text — конкретная горькая ремарка при провале. Не "не получилось" — а что именно пошло не так
+- Если has_check: false — check_description, success_text, failure_text оставляй пустыми
 
 Список характеристик:
 {skills_list}"""
 
 _SYSTEM_SCENE = """Ты — мастер диалогов Disco Elysium.
 По описанию сцены создай структурированный диалог.
-Каждый голос указывает dialog_option — короткую реплику или действие для кнопки продолжения.
+Характеристики комментируют сцену каждая в своём стиле. Если есть конкретное действие или факт под вопросом — добавь has_check с деталями.
 
 Список характеристик:
 {skills_list}"""
@@ -166,7 +163,7 @@ async def generate_skill_responses(
         )
         parsed: DialogAISchema = response.choices[0].message.parsed
         for r in parsed.responses:
-            logger.info("[AI←] %s | %r | option: %r", r.skill, r.text[:60], r.dialog_option)
+            logger.info("[AI←] %s | %r | has_check=%s", r.skill, r.text[:60], r.has_check)
         return _from_dialog_schema(parsed)
     except Exception as e:
         logger.error("OpenAI generate_skill_responses error: %s", e)
@@ -191,8 +188,8 @@ async def generate_scene(description: str) -> DialogAIResult:
         )
         parsed: SceneAISchema = response.choices[0].message.parsed
         logger.info(
-            "[AI] scene skills returned: %s",
-            [(r.skill, repr(r.dialog_option[:30])) for r in parsed.responses],
+            "[AI] scene skills: %s",
+            [(r.skill.value if hasattr(r.skill, 'value') else r.skill, r.has_check) for r in parsed.responses],
         )
         result = _from_dialog_schema(parsed)
         if parsed.opening and result.skill_responses:
@@ -307,15 +304,13 @@ def _normalize_skill_name(raw: str) -> str:
 
 def _from_dialog_schema(data: DialogAISchema | SceneAISchema) -> DialogAIResult:
     responses = []
-    options = []
     for r in data.responses:
         skill_name = r.skill.value  # Enum guarantees it's a valid skill name
-        logger.info("[AI] skill accepted: %s | option: %r", skill_name, r.dialog_option)
+        logger.info("[AI] skill accepted: %s has_check=%s", skill_name, r.has_check)
         responses.append(
             SkillResponse(
                 skill_name=skill_name,
                 text=r.text,
-                dialog_option=r.dialog_option,
                 has_check=r.has_check,
                 check_difficulty=r.check_difficulty,
                 check_description=r.check_description,
@@ -323,8 +318,6 @@ def _from_dialog_schema(data: DialogAISchema | SceneAISchema) -> DialogAIResult:
                 failure_text=r.failure_text,
             )
         )
-        if r.dialog_option:
-            options.append(r.dialog_option)
 
-    logger.info("[AI] final: %d skills, %d options", len(responses), len(options))
-    return DialogAIResult(skill_responses=responses, response_options=options)
+    logger.info("[AI] final: %d skill(s)", len(responses))
+    return DialogAIResult(skill_responses=responses)

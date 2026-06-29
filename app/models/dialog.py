@@ -7,6 +7,7 @@ class Dialog(Model):
     id = fields.UUIDField(pk=True, default=uuid.uuid4)
     user = fields.ForeignKeyField("models.User", related_name="dialogs")
     title = fields.CharField(max_length=500, null=True)
+    chat_id = fields.BigIntField(null=True)
     is_active = fields.BooleanField(default=True)
     created_at = fields.DatetimeField(auto_now_add=True)
 

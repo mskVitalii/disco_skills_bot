@@ -41,12 +41,12 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     name = message.from_user.first_name or "детектив"
     await message.answer(
         f"Добро пожаловать, {name}.\n\n"
-        "Я — голоса внутри. Напиши что-нибудь — и мы прокомментируем.\n\n"
+        "Я — характеристики детектива. Напиши что-нибудь — и одна из нас прокомментирует.\n\n"
         "<b>Команды:</b>\n"
-        "/disco — позвать голоса прямо сейчас\n"
+        "/disco — позвать характеристики прямо сейчас\n"
         "/scene <i>описание</i> — создать сцену для игры\n"
         "/skills — текущие уровни характеристик\n"
-        "/stats — статистика голосов и магистральные идеи\n"
+        "/stats — статистика характеристик и магистральные идеи\n"
         "/new — сбросить текущий диалог",
         parse_mode="HTML",
     )
@@ -136,11 +136,11 @@ async def cmd_disco(message: Message, state: FSMContext) -> None:
 
     last_message = await get_current_context_message(user)
     if last_message:
-        prompt = f"Голоса пробуждаются снова. Мысли возвращаются к: «{last_message[:120]}»"
+        prompt = f"Характеристики пробуждаются снова. Мысли возвращаются к: «{last_message[:120]}»"
     else:
-        prompt = "Детектив молчит. Тишина. Голоса внутри начинают говорить сами по себе."
+        prompt = "Детектив молчит. Тишина. Характеристики начинают говорить сами по себе."
 
-    thinking = await message.answer("🎭 Голоса пробуждаются...")
+    thinking = await message.answer("🎭 Характеристики пробуждаются...")
 
     text, ai_result, node_id = await handle_user_message(user=user, user_message=prompt)
 

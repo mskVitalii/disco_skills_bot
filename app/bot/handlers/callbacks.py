@@ -7,7 +7,6 @@ from aiogram.types import CallbackQuery
 
 from app.bot.keyboards.inline import (
     back_keyboard,
-    dialog_keyboard,
     skills_keyboard,
     enumeration_keyboard,
 )
@@ -76,61 +75,6 @@ async def cb_enum(cq: CallbackQuery, state: FSMContext) -> None:
     text, ai_result, new_node_id = await handle_user_message(
         user=user,
         user_message=chosen,
-    )
-
-    kb = dialog_keyboard(ai_result, new_node_id, show_back=True)
-    try:
-        await thinking.delete()
-    except Exception:
-        pass
-    sent = await cq.message.answer(text, parse_mode="HTML", reply_markup=kb)
-    await update_node_message_id(new_node_id, sent.message_id)
-    await state.set_state(DialogState.active)
-
-
-# ─── choice:{node_id}:{index} ─────────────────────────────────────────────────
-
-@router.callback_query(F.data.startswith("choice:"))
-async def cb_choice(cq: CallbackQuery, state: FSMContext) -> None:
-    logger.info("callback choice user_id=%s data=%r", cq.from_user.id, cq.data)
-    parts = cq.data.split(":")
-    if len(parts) < 3:
-        await cq.answer("Неверный формат")
-        return
-
-    option_index = int(parts[2])
-
-    try:
-        await cq.message.edit_reply_markup(reply_markup=None)
-    except TelegramBadRequest:
-        pass
-
-    await cq.answer()
-
-    from app.services.dialog_service import _load_node_cache, get_redis
-    redis = get_redis()
-    node_id = int(parts[1])
-    cache = await _load_node_cache(redis, node_id)
-    options = (cache or {}).get("options", [])
-    chosen_text = options[option_index] if option_index < len(options) else f"Вариант {option_index + 1}"
-
-    user = await get_or_create_user(
-        telegram_id=cq.from_user.id,
-        chat_id=cq.message.chat.id,
-        username=cq.from_user.username,
-        first_name=cq.from_user.first_name or "",
-    )
-
-    await cq.message.answer(f"<i>— {chosen_text}</i>", parse_mode="HTML")
-
-    try:
-        await cq.message.bot.send_chat_action(chat_id=cq.message.chat.id, action="typing")
-    except Exception:
-        pass
-    thinking = await cq.message.answer("⏳")
-    text, ai_result, new_node_id = await handle_user_message(
-        user=user,
-        user_message=chosen_text,
     )
 
     kb = dialog_keyboard(ai_result, new_node_id, show_back=True)
