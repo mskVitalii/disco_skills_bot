@@ -3,7 +3,6 @@ import random
 import re
 
 from aiogram import F, Router
-from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
@@ -101,10 +100,8 @@ async def _process_text(message: Message, text: str, state: FSMContext) -> None:
         await _process_enum(message, items, state)
         return
 
-    thinking = None
     try:
         user = await _get_or_init_user(message)
-        thinking = await message.answer("⏳")
         try:
             await message.bot.send_chat_action(chat_id=message.chat.id, action="typing")
         except Exception:
@@ -116,30 +113,14 @@ async def _process_text(message: Message, text: str, state: FSMContext) -> None:
         )
 
         if not ai_result.skill_responses:
-            try:
-                await thinking.delete()
-            except Exception:
-                pass
             return
 
         kb = dialog_keyboard(ai_result, node_id, show_back=True)
-        try:
-            sent = await thinking.edit_text(text_response, parse_mode="HTML", reply_markup=kb)
-        except TelegramBadRequest:
-            try:
-                await thinking.delete()
-            except Exception:
-                pass
-            sent = await message.answer(text_response, parse_mode="HTML", reply_markup=kb)
+        sent = await message.answer(text_response, parse_mode="HTML", reply_markup=kb)
         await update_node_message_id(node_id, sent.message_id)
         await state.set_state(DialogState.active)
     except Exception:
         logger.exception("Error processing message user_id=%s text=%r", message.from_user.id, text[:80])
-        if thinking:
-            try:
-                await thinking.delete()
-            except Exception:
-                pass
         await message.answer("Характеристики молчат. Попробуй снова — или /new чтобы начать заново.")
 
 
@@ -150,8 +131,11 @@ async def handle_text_active(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
     if not text or text.startswith("/"):
         return
-    logger.info("text user_id=%s len=%d", message.from_user.id, len(text))
     await _log_raw(message, "text", text=text)
+    if random.random() > settings.ACTIVATION_CHANCE:
+        logger.debug("text skipped by activation chance user_id=%s", message.from_user.id)
+        return
+    logger.info("text user_id=%s len=%d", message.from_user.id, len(text))
     await _process_text(message, text, state)
 
 
@@ -166,8 +150,11 @@ async def handle_text_any(message: Message, state: FSMContext) -> None:
     if current == DialogState.waiting_scene:
         return  # handled by command handler
 
-    logger.info("text(any) user_id=%s len=%d", message.from_user.id, len(text))
     await _log_raw(message, "text", text=text)
+    if random.random() > settings.ACTIVATION_CHANCE:
+        logger.debug("text(any) skipped by activation chance user_id=%s", message.from_user.id)
+        return
+    logger.info("text(any) user_id=%s len=%d", message.from_user.id, len(text))
     await _process_text(message, text, state)
 
 
@@ -188,29 +175,17 @@ async def handle_business_disco(message: Message, state: FSMContext) -> None:
 
     last_message = await get_current_context_message(user)
     if last_message:
-        prompt = f"Характеристики пробуждаются снова. Мысли возвращаются к: «{last_message[:120]}»"
+        prompt = f"Мысли возвращаются к: «{last_message[:120]}»"
     else:
-        prompt = "Детектив молчит. Тишина. Характеристики начинают говорить сами по себе."
+        prompt = "Детектив молчит. Тишина."
 
-    thinking = await message.answer("🎭 Характеристики пробуждаются...")
     text, ai_result, node_id = await handle_user_message(user=user, user_message=prompt)
 
     if not ai_result.skill_responses:
-        try:
-            await thinking.delete()
-        except Exception:
-            pass
         return
 
     kb = dialog_keyboard(ai_result, node_id, show_back=bool(last_message))
-    try:
-        sent = await thinking.edit_text(text, parse_mode="HTML", reply_markup=kb)
-    except TelegramBadRequest:
-        try:
-            await thinking.delete()
-        except Exception:
-            pass
-        sent = await message.answer(text, parse_mode="HTML", reply_markup=kb)
+    sent = await message.answer(text, parse_mode="HTML", reply_markup=kb)
     await update_node_message_id(node_id, sent.message_id)
     await state.set_state(DialogState.active)
 

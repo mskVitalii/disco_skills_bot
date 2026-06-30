@@ -136,20 +136,16 @@ async def cmd_disco(message: Message, state: FSMContext) -> None:
 
     last_message = await get_current_context_message(user)
     if last_message:
-        prompt = f"Характеристики пробуждаются снова. Мысли возвращаются к: «{last_message[:120]}»"
+        prompt = f"Мысли возвращаются к: «{last_message[:120]}»"
     else:
-        prompt = "Детектив молчит. Тишина. Характеристики начинают говорить сами по себе."
-
-    thinking = await message.answer("🎭 Характеристики пробуждаются...")
+        prompt = "Детектив молчит. Тишина."
 
     text, ai_result, node_id = await handle_user_message(user=user, user_message=prompt)
 
     if not ai_result.skill_responses:
-        await thinking.delete()
         return
 
     kb = dialog_keyboard(ai_result, node_id, show_back=bool(last_message))
-    await thinking.delete()
     sent = await message.answer(text, parse_mode="HTML", reply_markup=kb)
     await update_node_message_id(node_id, sent.message_id)
     await state.set_state(DialogState.active)
