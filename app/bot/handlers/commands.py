@@ -6,7 +6,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
 from app.bot.states import DialogState
-from app.data.skills import ALL_SKILLS, CATEGORIES
+from app.data.skills import ALL_SKILLS, CATEGORIES, SKILL_NAMES
 from app.models.user import User, UserSkillLevel
 from app.services.dialog_service import (
     get_or_create_user,
@@ -125,7 +125,7 @@ async def _process_scene(message: Message, state: FSMContext, description: str) 
 @router.message(Command("disco"))
 async def cmd_disco(message: Message, state: FSMContext) -> None:
 
-    logger.info("/disco user_id=%s", message.from_user.id)
+    logger.info("/disco user_id=%s text=%r", message.from_user.id, message.text)
 
     user = await get_or_create_user(
         telegram_id=message.from_user.id,
@@ -134,13 +134,22 @@ async def cmd_disco(message: Message, state: FSMContext) -> None:
         first_name=message.from_user.first_name or "",
     )
 
+    # /disco НАЗВАНИЕ — детерминированный вызов конкретной характеристики
+    text_parts = (message.text or "").split(maxsplit=1)
+    skill_arg = text_parts[1].strip().upper() if len(text_parts) > 1 else ""
+    forced_skill = skill_arg if skill_arg in ALL_SKILLS else None
+
     last_message = await get_current_context_message(user)
-    if last_message:
+    if forced_skill:
+        prompt = last_message or "Детектив молчит. Тишина."
+    elif last_message:
         prompt = f"Мысли возвращаются к: «{last_message[:120]}»"
     else:
         prompt = "Детектив молчит. Тишина."
 
-    text, ai_result, node_id = await handle_user_message(user=user, user_message=prompt)
+    text, ai_result, node_id = await handle_user_message(
+        user=user, user_message=prompt, forced_skill=forced_skill
+    )
 
     if not ai_result.skill_responses:
         return

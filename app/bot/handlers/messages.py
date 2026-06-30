@@ -1,5 +1,4 @@
 import logging
-import random
 import re
 
 from aiogram import F, Router
@@ -10,6 +9,7 @@ from aiogram.types import Message
 from app.bot.keyboards.inline import dialog_keyboard, enumeration_keyboard
 from app.bot.states import DialogState
 from app.core.config import settings
+from app.data.skills import ALL_SKILLS
 from app.models.raw_message import RawMessage
 from app.services.ai_service import transcribe_voice
 from app.services.dialog_service import (
@@ -132,9 +132,6 @@ async def handle_text_active(message: Message, state: FSMContext) -> None:
     if not text or text.startswith("/"):
         return
     await _log_raw(message, "text", text=text)
-    if random.random() > settings.ACTIVATION_CHANCE:
-        logger.debug("text skipped by activation chance user_id=%s", message.from_user.id)
-        return
     logger.info("text user_id=%s len=%d", message.from_user.id, len(text))
     await _process_text(message, text, state)
 
@@ -151,9 +148,6 @@ async def handle_text_any(message: Message, state: FSMContext) -> None:
         return  # handled by command handler
 
     await _log_raw(message, "text", text=text)
-    if random.random() > settings.ACTIVATION_CHANCE:
-        logger.debug("text(any) skipped by activation chance user_id=%s", message.from_user.id)
-        return
     logger.info("text(any) user_id=%s len=%d", message.from_user.id, len(text))
     await _process_text(message, text, state)
 
@@ -173,13 +167,22 @@ async def handle_business_disco(message: Message, state: FSMContext) -> None:
         first_name=(message.from_user.first_name or "") if message.from_user else "",
     )
 
+    # /disco НАЗВАНИЕ — детерминированный вызов конкретной характеристики
+    text_parts = (message.text or "").split(maxsplit=1)
+    skill_arg = text_parts[1].strip().upper() if len(text_parts) > 1 else ""
+    forced_skill = skill_arg if skill_arg in ALL_SKILLS else None
+
     last_message = await get_current_context_message(user)
-    if last_message:
+    if forced_skill:
+        prompt = last_message or "Детектив молчит. Тишина."
+    elif last_message:
         prompt = f"Мысли возвращаются к: «{last_message[:120]}»"
     else:
         prompt = "Детектив молчит. Тишина."
 
-    text, ai_result, node_id = await handle_user_message(user=user, user_message=prompt)
+    text, ai_result, node_id = await handle_user_message(
+        user=user, user_message=prompt, forced_skill=forced_skill
+    )
 
     if not ai_result.skill_responses:
         return
@@ -203,10 +206,6 @@ async def handle_business_text(message: Message, state: FSMContext) -> None:
     await _log_raw(message, "business_text", text=text, business_connection_id=message.business_connection_id)
     # Skip owner's own messages — bot only responds to /disco for the owner
     if _is_owner(uid):
-        return
-    # Характеристики встревают не в каждое сообщение — только иногда
-    if random.random() > settings.ACTIVATION_CHANCE:
-        logger.debug("business_message skipped by activation chance user_id=%s", uid)
         return
     await _process_text(message, text, state)
 

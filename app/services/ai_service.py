@@ -76,16 +76,16 @@ _SYSTEM_GENERATE = """Ты — игра Disco Elysium в формате Telegram
 Характеристики детектива комментируют сообщение пользователя.
 
 Правила:
-- Выбери ТОЛЬКО 1 характеристику из списка ниже — ту, которой ДЕЙСТВИТЕЛЬНО есть что сказать. Не больше.
-- Используй ТОЛЬКО названия из списка, точно как написано. Любое другое название недопустимо.
-- responses: [] ТОЛЬКО для чисто логистических/административных фраз: назначение встреч, координаты, «буду в 5», «окей увидимся». Эмоции, реакции, восклицания — всегда заслуживают ответа.
-- Если ни одной характеристике нечего добавить — responses: []. Но короткие эмоциональные реплики («Йее», «Орунькаю», «Обожаю!») — это богатый материал, не пропускай их.
+- ВАЖНО: В большинстве случаев — responses: []. Характеристика вмешивается РЕДКО — только когда у неё есть КОНКРЕТНЫЙ шаг, факт или фраза, которая изменит ситуацию. Если характеристика просто перефразирует сказанное или добавляет наблюдение без применения — молчи.
+- Выбери ТОЛЬКО 1 характеристику — ту, которой есть что-то острое и конкретное. Не больше.
+- Используй ТОЛЬКО названия из списка, точно как написано.
+- responses: [] для чисто логистических фраз (координаты, «буду в 5»), а также всегда, когда нечего добавить кроме переформулировки.
 - В поле skill указывай ТОЛЬКО название заглавными буквами, без эмодзи. Например: ЛОГИКА, ЭМПАТИЯ
-- Характеристика говорит ровно 1–2 предложения — острые, точные, в своём стиле. Никаких вводных слов.
+- Характеристика говорит ровно 1–2 предложения — острые, конкретные, в своём стиле. Никаких вводных слов.
 - Если у характеристики написано "матерится" — мат обязателен.
-- ЗАПРЕЩЕНО: советовать, предупреждать, морализировать, говорить что «нужно» или «не стоит». Характеристика — не наставник, а наблюдатель со своей природой. Она замечает, чувствует, вспоминает — но не поучает.
-- Каждая характеристика говорит ТОЛЬКО через призму своей природы. ЛОГИКА строит цепочки, ЭМПАТИЯ чувствует чужое состояние, БОЛЬ фиксирует телесное — каждая про своё, не про жизнь вообще.
-- has_check: ставь true примерно в 30–40% случаев — когда есть конкретный факт, который может вскрыться, или действие, которое может не выйти. Без проверок на абстрактные «понять», «уловить», «осознать».
+- ЗАПРЕЩЕНО: морализировать, взывать к совести, читать лекции о «правильном». Но МОЖНО и НУЖНО: называть конкретные действия, факты, фразы — каждая характеристика действует голосом своей природы.
+- Каждая характеристика говорит ТОЛЬКО через призму своей природы. ЛОГИКА строит цепочки и называет следующий шаг, ЭМПАТИЯ предлагает слова для разговора, ЭЛЕКТРОХИМИЯ требует конкретного удовольствия — каждая про своё.
+- has_check: ставь true примерно в 60–70% случаев — когда есть конкретный факт, который может вскрыться, или действие, которое может не выйти. Без проверок на абстрактные «понять», «уловить», «осознать».
 - check_description — надпись на кнопке броска кубиков: глагол + объект, макс 35 символов. Например: "Вспомнить год постройки", "Угадать мотив"
 - success_text — КОНКРЕТНЫЙ факт/деталь/реплика при успехе. Не "всплывает что-то" — а именно ЧТО всплыло
 - failure_text — конкретная горькая ремарка при провале. Не "не получилось" — а что именно пошло не так
@@ -121,13 +121,23 @@ async def generate_skill_responses(
     context_messages: list[dict] | None = None,
     user_ideas: list[str] | None = None,
     semantic_context: list[str] | None = None,
+    forced_skill: str | None = None,
 ) -> DialogAIResult:
     skills_list = skill_list_for_prompt()
+
+    forced_note = ""
+    if forced_skill and forced_skill in ALL_SKILLS:
+        skill_def = ALL_SKILLS[forced_skill]
+        forced_note = (
+            f"\n\nОБЯЗАТЕЛЬНО: детектив вызвал {skill_def.emoji} {forced_skill} напрямую командой. "
+            f"Ты ОБЯЗАН вернуть responses ровно с ОДНИМ элементом, где skill='{forced_skill}'. "
+            f"Используй стиль этой характеристики: {skill_def.system_prompt}"
+        )
 
     messages: list[dict] = [
         {
             "role": "system",
-            "content": _SYSTEM_GENERATE.format(skills_list=skills_list),
+            "content": _SYSTEM_GENERATE.format(skills_list=skills_list) + forced_note,
         }
     ]
 
@@ -148,11 +158,11 @@ async def generate_skill_responses(
         })
 
     if context_messages:
-        messages.extend(context_messages[-14:])
+        messages.extend(context_messages[-25:])
 
     messages.append({"role": "user", "content": user_message})
 
-    logger.info("[AI→] user: %r", user_message)
+    logger.info("[AI→] user: %r forced_skill=%s", user_message, forced_skill)
     try:
         response = await get_openai().beta.chat.completions.parse(
             model=settings.OPENAI_MODEL,
@@ -164,7 +174,17 @@ async def generate_skill_responses(
         parsed: DialogAISchema = response.choices[0].message.parsed
         for r in parsed.responses:
             logger.info("[AI←] %s | %r | has_check=%s", r.skill, r.text[:60], r.has_check)
-        return _from_dialog_schema(parsed)
+        result = _from_dialog_schema(parsed)
+
+        # Enforce forced skill: reassign if model chose differently
+        if forced_skill and forced_skill in ALL_SKILLS:
+            if not result.skill_responses:
+                result.skill_responses = [SkillResponse(skill_name=forced_skill, text="…")]
+            else:
+                result.skill_responses[0].skill_name = forced_skill
+                result.skill_responses = result.skill_responses[:1]
+
+        return result
     except Exception as e:
         logger.error("OpenAI generate_skill_responses error: %s", e)
         return DialogAIResult()

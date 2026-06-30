@@ -271,14 +271,14 @@ async def _generate_and_store_embedding(node_id: int, text: str) -> None:
 # ─── Recent context loader ────────────────────────────────────────────────────
 
 async def _get_dialog_context(dialog_id: str, exclude_last: bool = True) -> list[dict]:
-    """Load last ~15 dialog nodes as chat messages for AI context."""
-    nodes = await DialogNode.filter(dialog__id=dialog_id).order_by("-created_at").limit(16).all()
+    """Load last ~25 dialog nodes as chat messages for AI context."""
+    nodes = await DialogNode.filter(dialog__id=dialog_id).order_by("-created_at").limit(26).all()
     nodes = list(reversed(nodes))
     if exclude_last and nodes:
         nodes = nodes[:-1]  # exclude current (not yet created)
 
     messages = []
-    for node in nodes[-15:]:
+    for node in nodes[-25:]:
         messages.append({"role": "user", "content": node.user_message})
         if node.skill_responses:
             parts = []
@@ -296,6 +296,7 @@ async def handle_user_message(
     user: User,
     user_message: str,
     context_messages: list[dict] | None = None,
+    forced_skill: str | None = None,
 ) -> tuple[str, DialogAIResult, int]:
     """Process a user message, return (formatted_text, ai_result, node_id)."""
     redis = get_redis()
@@ -347,6 +348,7 @@ async def handle_user_message(
         context_messages=context_messages,
         user_ideas=user_ideas,
         semantic_context=semantic_msgs,
+        forced_skill=forced_skill,
     )
     logger.info(
         "[dialog] ai_result: skills=%s",
