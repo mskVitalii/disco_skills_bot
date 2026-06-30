@@ -54,7 +54,6 @@ docs/
 - `DATABASE_URL` — PostgreSQL DSN
 - `REDIS_URL` — Redis URL
 - `OPENAI_API_KEY` — ключ OpenAI
-- `ALLOWED_USER_IDS` — через запятую, кому разрешён доступ
 
 ## Механика игры
 

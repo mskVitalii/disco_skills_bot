@@ -11,6 +11,7 @@ from aiogram.types import Message
 from app.bot.keyboards.inline import dialog_keyboard, enumeration_keyboard
 from app.bot.states import DialogState
 from app.core.config import settings
+from app.models.raw_message import RawMessage
 from app.services.ai_service import transcribe_voice
 from app.services.dialog_service import (
     get_or_create_user,
@@ -59,6 +60,27 @@ async def _get_or_init_user(message: Message):
         username=message.from_user.username,
         first_name=message.from_user.first_name or "",
     )
+
+
+async def _log_raw(
+    message: Message,
+    message_type: str,
+    text: str | None = None,
+    business_connection_id: str | None = None,
+) -> None:
+    uid = message.from_user.id if message.from_user else 0
+    try:
+        await RawMessage.create(
+            telegram_id=uid,
+            chat_id=message.chat.id,
+            username=message.from_user.username if message.from_user else None,
+            message_id=message.message_id,
+            message_type=message_type,
+            text=text,
+            business_connection_id=business_connection_id,
+        )
+    except Exception:
+        logger.exception("Failed to save raw_message user_id=%s type=%s", uid, message_type)
 
 
 async def _process_enum(message: Message, items: list[str], state: FSMContext) -> None:
@@ -125,18 +147,17 @@ async def _process_text(message: Message, text: str, state: FSMContext) -> None:
 
 @router.message(F.text, DialogState.active)
 async def handle_text_active(message: Message, state: FSMContext) -> None:
-
     text = (message.text or "").strip()
     if not text or text.startswith("/"):
         return
     logger.info("text user_id=%s len=%d", message.from_user.id, len(text))
+    await _log_raw(message, "text", text=text)
     await _process_text(message, text, state)
 
 
 # Auto-activate for users who skipped /start
 @router.message(F.text)
 async def handle_text_any(message: Message, state: FSMContext) -> None:
-
     text = (message.text or "").strip()
     if not text or text.startswith("/"):
         return
@@ -146,6 +167,7 @@ async def handle_text_any(message: Message, state: FSMContext) -> None:
         return  # handled by command handler
 
     logger.info("text(any) user_id=%s len=%d", message.from_user.id, len(text))
+    await _log_raw(message, "text", text=text)
     await _process_text(message, text, state)
 
 
@@ -155,6 +177,7 @@ async def handle_text_any(message: Message, state: FSMContext) -> None:
 async def handle_business_disco(message: Message, state: FSMContext) -> None:
     uid = message.from_user.id if message.from_user else 0
     logger.info("business_disco user_id=%s conn=%s", uid, message.business_connection_id)
+    await _log_raw(message, "business_disco", text=message.text, business_connection_id=message.business_connection_id)
 
     user = await get_or_create_user(
         telegram_id=uid,
@@ -173,12 +196,21 @@ async def handle_business_disco(message: Message, state: FSMContext) -> None:
     text, ai_result, node_id = await handle_user_message(user=user, user_message=prompt)
 
     if not ai_result.skill_responses:
-        await thinking.delete()
+        try:
+            await thinking.delete()
+        except Exception:
+            pass
         return
 
     kb = dialog_keyboard(ai_result, node_id, show_back=bool(last_message))
-    await thinking.delete()
-    sent = await message.answer(text, parse_mode="HTML", reply_markup=kb)
+    try:
+        sent = await thinking.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    except TelegramBadRequest:
+        try:
+            await thinking.delete()
+        except Exception:
+            pass
+        sent = await message.answer(text, parse_mode="HTML", reply_markup=kb)
     await update_node_message_id(node_id, sent.message_id)
     await state.set_state(DialogState.active)
 
@@ -193,6 +225,7 @@ async def handle_business_text(message: Message, state: FSMContext) -> None:
     )
     if not text or text.startswith("/"):
         return
+    await _log_raw(message, "business_text", text=text, business_connection_id=message.business_connection_id)
     # Skip owner's own messages — bot only responds to /disco for the owner
     if _is_owner(uid):
         return
@@ -212,6 +245,7 @@ async def handle_voice(message: Message, state: FSMContext) -> None:
         return
 
     logger.info("voice user_id=%s duration=%ds", message.from_user.id, voice.duration)
+    await _log_raw(message, "voice")
     thinking = await message.answer("🎙️ Транскрибирую голосовое...")
 
     bot = message.bot
@@ -237,13 +271,12 @@ async def handle_voice(message: Message, state: FSMContext) -> None:
 
 @router.message(F.video_note)
 async def handle_video_note(message: Message, state: FSMContext) -> None:
-
-
     video_note = message.video_note
     if not video_note:
         return
 
     logger.info("video_note user_id=%s duration=%ds", message.from_user.id, video_note.duration)
+    await _log_raw(message, "video_note")
     thinking = await message.answer("🎙️ Транскрибирую кружочек...")
 
     bot = message.bot

@@ -25,6 +25,26 @@ logger = logging.getLogger(__name__)
 
 DIALOG_STATE_TTL = 60 * 60 * 24  # 24 hours
 
+_pgvector_available: bool | None = None  # None = not yet probed
+
+
+async def _check_pgvector() -> bool:
+    global _pgvector_available
+    if _pgvector_available is not None:
+        return _pgvector_available
+    try:
+        from tortoise import connections
+        conn = connections.get("default")
+        _, rows = await conn.execute_query(
+            "SELECT 1 FROM pg_extension WHERE extname = 'vector'"
+        )
+        _pgvector_available = bool(rows)
+    except Exception:
+        _pgvector_available = False
+    if not _pgvector_available:
+        logger.warning("[embed] pgvector extension not installed — embedding features disabled")
+    return _pgvector_available
+
 
 # ─── Redis helpers ────────────────────────────────────────────────────────────
 
@@ -182,6 +202,8 @@ async def get_user_ideas(user: User, limit: int = 5) -> list[str]:
 # ─── Semantic search (pgvector) ──────────────────────────────────────────────
 
 async def _store_embedding(node_id: int, embedding: list[float]) -> None:
+    if not await _check_pgvector():
+        return
     vec_str = "[" + ",".join(str(v) for v in embedding) + "]"
     try:
         from tortoise import connections
@@ -202,6 +224,8 @@ async def semantic_search(
     limit: int = 3,
 ) -> list[str]:
     """Find user messages from past dialogs in the same chat that are semantically similar."""
+    if not await _check_pgvector():
+        return []
     vec_str = "[" + ",".join(str(v) for v in query_embedding) + "]"
     try:
         from tortoise import connections

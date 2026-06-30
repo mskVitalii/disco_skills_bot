@@ -17,6 +17,7 @@ TORTOISE_ORM = {
                 "app.models.user",
                 "app.models.dialog",
                 "app.models.stats",
+                "app.models.raw_message",
                 "aerich.models",
             ],
             "default_connection": "default",

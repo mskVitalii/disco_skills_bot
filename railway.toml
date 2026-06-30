@@ -17,7 +17,6 @@ REDISPORT = "${{Redis.REDISPORT}}"
 REDISPASSWORD = "${{Redis.REDISPASSWORD}}"
 OPENAI_API_KEY = { required = true }
 WEBHOOK_URL = { required = true }
-ALLOWED_USER_IDS = { required = false }
 OPENAI_MODEL = { default = "gpt-4o-mini" }
 WHISPER_MODEL = { default = "whisper-1" }
 MAX_SKILL_RESPONSES = { default = "4" }

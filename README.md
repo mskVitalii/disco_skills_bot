@@ -108,7 +108,6 @@ make dev
 | `OPENAI_API_KEY` | Ключ OpenAI |
 | `OPENAI_MODEL` | Модель (по умолчанию `gpt-4o-mini`) |
 | `WHISPER_MODEL` | Модель транскрипции (по умолчанию `whisper-1`) |
-| `ALLOWED_USER_IDS` | Telegram ID через запятую (пусто → все) |
 | `MAX_SKILL_RESPONSES` | Сколько характеристик отвечает на одно сообщение (по умолчанию `4`) |
 
 ---
