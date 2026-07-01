@@ -64,6 +64,13 @@ async def global_error_handler(event: ErrorEvent) -> None:
         exc_info=event.exception,
     )
 
+def _build_webhook_url() -> str:
+    base = settings.WEBHOOK_URL.rstrip("/")
+    if not base.startswith(("http://", "https://")):
+        base = f"https://{base}"
+    return f"{base}/webhook"
+
+
 _polling_task: asyncio.Task | None = None
 _init_task: asyncio.Task | None = None
 _bot_username: str | None = None
@@ -131,7 +138,7 @@ async def _background_init() -> None:
 
     # ── Webhook / Polling ──────────────────────────────────────────────────────
     if settings.WEBHOOK_URL:
-        webhook_url = f"{settings.WEBHOOK_URL.rstrip('/')}/webhook"
+        webhook_url = _build_webhook_url()
         logger.info("[4/4] Setting webhook: %s", webhook_url)
         try:
             await bot.set_webhook(
@@ -262,7 +269,7 @@ async def require_admin(
 async def set_webhook_endpoint() -> JSONResponse:
     if not settings.WEBHOOK_URL:
         return JSONResponse({"error": "WEBHOOK_URL not configured"}, status_code=400)
-    webhook_url = f"{settings.WEBHOOK_URL.rstrip('/')}/webhook"
+    webhook_url = _build_webhook_url()
     await bot.set_webhook(
         webhook_url,
         drop_pending_updates=True,
@@ -280,9 +287,7 @@ async def set_webhook_endpoint() -> JSONResponse:
 @app.get("/webhook-info", dependencies=[Depends(require_admin)])
 async def webhook_info_endpoint() -> JSONResponse:
     info = await bot.get_webhook_info()
-    expected_url = (
-        f"{settings.WEBHOOK_URL.rstrip('/')}/webhook" if settings.WEBHOOK_URL else None
-    )
+    expected_url = _build_webhook_url() if settings.WEBHOOK_URL else None
     return JSONResponse({
         "webhook_info": info.model_dump(mode="json"),
         "expected_url": expected_url,
