@@ -245,13 +245,17 @@ async def webhook(request: Request) -> dict:
     return {"ok": True}
 
 
-@app.post("/set-webhook")
-async def set_webhook_endpoint(authorization: str = Header(default="")) -> JSONResponse:
+def _check_admin_token(authorization: str) -> None:
     if not settings.ADMIN_TOKEN:
         raise HTTPException(status_code=503, detail="ADMIN_TOKEN not configured")
     token = authorization.removeprefix("Bearer ").strip()
     if not hmac.compare_digest(token, settings.ADMIN_TOKEN):
         raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+@app.post("/set-webhook")
+async def set_webhook_endpoint(authorization: str = Header(default="")) -> JSONResponse:
+    _check_admin_token(authorization)
     if not settings.WEBHOOK_URL:
         return JSONResponse({"error": "WEBHOOK_URL not configured"}, status_code=400)
     webhook_url = f"{settings.WEBHOOK_URL.rstrip('/')}/webhook"
@@ -260,8 +264,28 @@ async def set_webhook_endpoint(authorization: str = Header(default="")) -> JSONR
         drop_pending_updates=True,
         allowed_updates=dp.resolve_used_update_types(),
     )
+    info = await bot.get_webhook_info()
     logger.info("Webhook set via /set-webhook: %s", webhook_url)
-    return JSONResponse({"ok": True, "webhook_url": webhook_url})
+    return JSONResponse({
+        "ok": True,
+        "webhook_url": webhook_url,
+        "webhook_info": info.model_dump(mode="json"),
+    })
+
+
+@app.get("/webhook-info")
+async def webhook_info_endpoint(authorization: str = Header(default="")) -> JSONResponse:
+    _check_admin_token(authorization)
+    info = await bot.get_webhook_info()
+    expected_url = (
+        f"{settings.WEBHOOK_URL.rstrip('/')}/webhook" if settings.WEBHOOK_URL else None
+    )
+    return JSONResponse({
+        "webhook_info": info.model_dump(mode="json"),
+        "expected_url": expected_url,
+        "url_matches": (info.url == expected_url) if expected_url else None,
+        "allowed_updates_resolved": dp.resolve_used_update_types(),
+    })
 
 
 @app.get("/health")
