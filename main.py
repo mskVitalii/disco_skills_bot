@@ -12,8 +12,9 @@ from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.storage.redis import RedisStorage
 from aiogram.types import ErrorEvent, Update
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.bot.router import main_router
 from app.core.config import settings
@@ -245,17 +246,20 @@ async def webhook(request: Request) -> dict:
     return {"ok": True}
 
 
-def _check_admin_token(authorization: str) -> None:
+admin_auth_scheme = HTTPBearer(auto_error=False)
+
+
+async def require_admin(
+    credentials: HTTPAuthorizationCredentials | None = Depends(admin_auth_scheme),
+) -> None:
     if not settings.ADMIN_TOKEN:
         raise HTTPException(status_code=503, detail="ADMIN_TOKEN not configured")
-    token = authorization.removeprefix("Bearer ").strip()
-    if not hmac.compare_digest(token, settings.ADMIN_TOKEN):
+    if credentials is None or not hmac.compare_digest(credentials.credentials, settings.ADMIN_TOKEN):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
-@app.post("/set-webhook")
-async def set_webhook_endpoint(authorization: str = Header(default="")) -> JSONResponse:
-    _check_admin_token(authorization)
+@app.post("/set-webhook", dependencies=[Depends(require_admin)])
+async def set_webhook_endpoint() -> JSONResponse:
     if not settings.WEBHOOK_URL:
         return JSONResponse({"error": "WEBHOOK_URL not configured"}, status_code=400)
     webhook_url = f"{settings.WEBHOOK_URL.rstrip('/')}/webhook"
@@ -273,9 +277,8 @@ async def set_webhook_endpoint(authorization: str = Header(default="")) -> JSONR
     })
 
 
-@app.get("/webhook-info")
-async def webhook_info_endpoint(authorization: str = Header(default="")) -> JSONResponse:
-    _check_admin_token(authorization)
+@app.get("/webhook-info", dependencies=[Depends(require_admin)])
+async def webhook_info_endpoint() -> JSONResponse:
     info = await bot.get_webhook_info()
     expected_url = (
         f"{settings.WEBHOOK_URL.rstrip('/')}/webhook" if settings.WEBHOOK_URL else None
